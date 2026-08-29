@@ -1,0 +1,454 @@
+<title>Safix Information Memorandum</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap">
+<style>
+  :root {
+    --paper: #ffffff;
+    --ink: #101413;
+    --muted: #5c6763;
+    --accent: #10e7c0;
+    --accent-deep: #0b8a71;
+    --hairline: #e4eae8;
+    --panel: #f4faf8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #070c0c;
+      --ink: #e8f1ee;
+      --muted: #98a8a2;
+      --accent: #10e7c0;
+      --accent-deep: #2debc8;
+      --hairline: #14201f;
+      --panel: #0a1a1c;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #070c0c;
+    --ink: #e8f1ee;
+    --muted: #98a8a2;
+    --accent: #10e7c0;
+    --accent-deep: #2debc8;
+    --hairline: #14201f;
+    --panel: #0a1a1c;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 56px 24px 72px;
+  }
+
+  .masthead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .wordmark {
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 0.02em;
+  }
+
+  .wordmark span {
+    color: var(--accent-deep);
+  }
+
+  .doctype {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  h1 {
+    margin: 40px 0 0;
+    font-size: 40px;
+    line-height: 1.12;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  h1 span {
+    color: var(--accent-deep);
+  }
+
+  .meta {
+    margin-top: 14px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  .lede {
+    margin: 28px 0 0;
+    font-size: 18.5px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  h2 {
+    margin: 52px 0 14px;
+    font-size: 21px;
+    line-height: 1.25;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  h2::before {
+    content: "";
+    display: block;
+    width: 22px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  p {
+    margin: 14px 0 0;
+    text-wrap: pretty;
+  }
+
+  strong {
+    font-weight: 700;
+  }
+
+  em {
+    font-style: normal;
+    color: var(--accent-deep);
+    font-weight: 500;
+  }
+
+  ul {
+    margin: 16px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  ul li {
+    position: relative;
+    padding-left: 22px;
+  }
+
+  ul li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.62em;
+    width: 8px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent-deep);
+  }
+
+  ul li b {
+    font-weight: 700;
+  }
+
+  .figures {
+    margin: 20px 0 0;
+    padding: 18px 20px;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .figures p {
+    margin: 0;
+  }
+
+  .figures .src {
+    display: block;
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .tagline {
+    margin: 24px 0 0;
+    padding: 16px 20px;
+    border-left: 3px solid var(--accent);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .cases {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .case {
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+
+  .case .label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .case.best {
+    background: var(--panel);
+  }
+
+  .case.best .label {
+    color: var(--accent-deep);
+  }
+
+  .case p + p {
+    margin-top: 8px;
+    font-size: 15px;
+  }
+
+  .footer {
+    margin-top: 56px;
+    padding-top: 20px;
+    border-top: 1px solid var(--hairline);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+
+  .footer p {
+    margin: 0 0 8px;
+  }
+
+  a {
+    color: var(--accent-deep);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 560px) {
+    h1 {
+      font-size: 31px;
+    }
+
+    .cases {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media print {
+    :root {
+      --paper: #ffffff;
+      --ink: #111413;
+      --muted: #55605c;
+      --accent: #0b8a71;
+      --accent-deep: #0b8a71;
+      --hairline: #d9e0de;
+      --panel: #f2f8f6;
+    }
+
+    .page {
+      padding: 0;
+      max-width: none;
+    }
+
+    h2 {
+      break-after: avoid;
+    }
+
+    .figures, .case, .tagline {
+      break-inside: avoid;
+    }
+
+    @page {
+      size: A4;
+      margin: 14mm 14mm;
+    }
+  }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div class="wordmark">Safix<span>.</span></div>
+    <div class="doctype">Information memorandum</div>
+  </header>
+
+  <h1>Unlock capital.<br><span>Keep ownership.</span></h1>
+  <p class="meta">Draft v1 · August 2026 · Safix, the private credit layer for tokenized assets</p>
+
+  <p class="lede">
+    Tokenization solved ownership. It did not solve two things that follow from it: everything you own
+    onchain is public, and almost nothing you own onchain can be borrowed against. Safix fixes both.
+    Lock tokenized real-world assets as collateral, draw USDC at zero interest, and prove you qualify
+    without showing anyone your portfolio.
+  </p>
+
+  <h2>The problem</h2>
+  <div class="figures">
+    <p>
+      Tokenized real-world assets crossed <strong>$31B</strong> on public blockchains in July 2026, up
+      more than <strong>400%</strong> since early 2025, held by nearly a million wallets across
+      <strong>167 platforms</strong>. Six categories are past the billion mark: private credit,
+      commodities, treasuries, corporate bonds, non-US government debt, and institutional funds.
+    </p>
+    <span class="src">Source: rwa.xyz, July 2026</span>
+  </div>
+  <p>
+    The rails work. The assets exist. Then they sit there. For most holders, a tokenized stock or bond
+    has exactly two functions: hold it or sell it. Borrowing against it remains fragmented,
+    institutional, or impossible, and onchain private credit is still a single-digit-billions market by
+    distributed value. The largest asset class coming onchain has no working credit layer underneath it.
+  </p>
+  <p>
+    The second problem compounds the first. Blockchains are public by default. A wallet that holds
+    tokenized stocks is a brokerage statement anyone can read: balances, positions, transaction history,
+    and from the moment you borrow, your debts. No serious investor runs their finances in a window
+    display, and no serious credit market can be built inside one.
+  </p>
+
+  <h2>What Safix is</h2>
+  <p>Safix is a private credit layer for tokenized assets. Four parts make it work.</p>
+  <ul>
+    <li><b>Collateral risk checks.</b> Before any loan, the protocol privately verifies that the collateral is real, valuable enough, eligible, and not already pledged elsewhere, and that the borrower's existing debt is acceptable.</li>
+    <li><b>Zero-interest credit.</b> Borrowers draw USDC against locked collateral for a fixed one-time fee. Debt never grows with time. The full cost is known on day one.</li>
+    <li><b>Reusable credit passports.</b> A portable, private proof of borrowing power that works across wallets, chains, and lending platforms. Counterparties see eligibility signals only. Holdings disclosed: zero percent.</li>
+    <li><b>Collateral control plane.</b> One view of collateral health, available credit, and every attestation in force, so a borrower always knows where they stand.</li>
+  </ul>
+
+  <h2>How the money works</h2>
+  <p class="tagline">No time-based interest anywhere in the network. Safix charges for events, not for time.</p>
+  <p>
+    The credit line follows the peer-to-pool model pioneered by Liquity. Liquidity providers fund a
+    stability pool with USDC. Borrowers lock collateral and draw from it, paying a one-time origination
+    fee, then a fixed redemption fee when the position closes. If collateral value falls below the
+    required level, part of it is liquidated: the pool absorbs the debt and receives the collateral at a
+    discount. That flow, together with protocol rewards, is where provider returns come from. Providers
+    earn from real events in the network, not from the passage of time.
+  </p>
+  <p>
+    For financing tied to a business or a productive asset, Safix replaces the creditor relationship
+    with a partnership. The pool provides capital, the financed party operates it, and profit is split
+    at a pre-agreed ratio. Genuine losses without misconduct fall on the capital. Whoever funds a
+    venture carries its risk, which is how credit stays honest.
+  </p>
+  <p>
+    Revenue comes from origination fees, redemption fees, private verification fees, liquidation fees, a
+    protocol share of partnership profits, and integrations: RWA issuers who want their assets to be
+    borrowable, and lending platforms that want verified collateral without building verification.
+  </p>
+
+  <h2>The privacy layer</h2>
+  <p>
+    Safix answers questions without revealing data. A counterparty can confirm five things about a
+    user: they own enough approved collateral, they meet identity and eligibility requirements, their
+    existing debt is acceptable, the same collateral is not pledged elsewhere, and they qualify for the
+    requested loan. That is all a lender actually needs, and it is all they get. Identity, exact
+    holdings, wallet balances, and loan details stay confidential.
+  </p>
+  <p>
+    The credit passport makes this reusable. Verified once, a borrower can present proof to any
+    integrated platform without repeating the process and without a lender ever seeing the portfolio
+    behind the proof.
+  </p>
+
+  <h2>Why now</h2>
+  <p>
+    Three curves crossed. <em>The issuance layer matured:</em> platforms like Securitize, Centrifuge,
+    Backed, and Ondo turned tokenized treasuries, funds, and equities into a real market.
+    <em>Stablecoin credit demand proved itself onchain,</em> but at rates and disclosure levels that
+    keep serious collateral away. <em>And proof systems became practical</em> enough to verify claims
+    about assets without publishing the assets themselves. The first two created the market. The third
+    makes Safix buildable now and not five years ago.
+  </p>
+
+  <h2>What exists today</h2>
+  <p>
+    Onchain lending bluechips price everything in public and mostly against crypto-native collateral.
+    RWA lending desks are institutional, slow, and paperwork-bound. Privacy tools hide transfers but
+    answer no questions, which is exactly backwards for credit, where the counterparty must learn
+    something. Safix sits in the gap: it answers the credit questions and hides everything else.
+  </p>
+  <p>
+    The defensible part is the passport. Every verification strengthens a reusable identity that
+    borrowers will not want to rebuild elsewhere, and every integrated platform makes it more useful to
+    hold one.
+  </p>
+
+  <h2>Where we are</h2>
+  <p>
+    Safix is at the beginning, and this memorandum is written from there on purpose. The site is live
+    with a working protocol terminal, and the documentation describing the full model, from fee schedule
+    to loss rules, is drafted. The immediate work is narrow: lock the collateral verification design,
+    ship the passport prototype, stand up the stability pool on testnet, and land the first RWA issuer
+    integration. Everything else in this document is earned after that.
+  </p>
+
+  <h2>Risks, honestly</h2>
+  <ul>
+    <li>Tokenized collateral is only as strong as its legal wrapper. If offchain enforcement fails, onchain verification does not save you. Issuer selection is underwriting.</li>
+    <li>Zero-interest economics depend on event flow. In calm markets, liquidation gains thin out and provider yield leans on fees and rewards. Fee routing to the pool is an open design decision, deliberately.</li>
+    <li>The privacy layer must satisfy regulators and users at the same time. Proving eligibility without disclosure is a narrow path, and it is the entire product.</li>
+    <li>Partnership financing needs honest profit measurement. Attesting business outcomes is hard, and the attestation layer must carry that weight.</li>
+    <li>Incumbents could move: lending protocols could add RWA privacy, issuers could build credit in-house. The passport has to become the standard before that happens.</li>
+  </ul>
+
+  <h2>Worst case, best case</h2>
+  <div class="cases">
+    <div class="case">
+      <p class="label">Worst case</p>
+      <p>A disciplined zero-interest lending pool for tokenized assets, serving borrowers who value not being watched, earning real fees on real collateral.</p>
+    </div>
+    <div class="case best">
+      <p class="label">Best case</p>
+      <p>The credit passport becomes the layer every wallet, lender, and RWA platform uses to answer one question they all share: can this user safely and legally borrow against these assets?</p>
+    </div>
+  </div>
+
+  <h2>Closing</h2>
+  <p>
+    Tokenization gave assets a new home. Safix gives them work to do. Owning something onchain should
+    not mean broadcasting it, and unlocking its value should not mean selling it.
+  </p>
+  <p><em>Unlock capital. Keep ownership.</em></p>
+
+  <footer class="footer">
+    <p>
+      This memorandum is a working draft provided for information purposes only. It is not an offer of
+      securities, not a solicitation of investment, and not financial advice. Market figures are from
+      rwa.xyz as of July 2026.
+    </p>
+    <p>©2026 Safix</p>
+  </footer>
+</div>
