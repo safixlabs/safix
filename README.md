@@ -1,8 +1,8 @@
-# XYZ
+# Safix
 
 Private credit network for tokenized stocks and real-world assets.
 
-XYZ allows users to borrow stablecoins against their tokenized investments without selling them or publicly exposing their portfolio.
+Safix allows users to borrow stablecoins against their tokenized investments without selling them or publicly exposing their portfolio.
 
 Documentation lives at [safixlabs/safix-docs](https://github.com/safixlabs/safix-docs).
 
@@ -14,7 +14,7 @@ These assets also have limited utility. Most holders can only hold or sell them,
 
 ## The solution
 
-XYZ allows users to lock tokenized stocks, bonds, funds, real estate, commodities, and other RWAs as collateral to borrow stablecoins.
+Safix allows users to lock tokenized stocks, bonds, funds, real estate, commodities, and other RWAs as collateral to borrow stablecoins.
 
 The platform privately verifies that the collateral is real, valuable enough, eligible for use, and not already securing another loan.
 
@@ -22,18 +22,18 @@ The platform privately verifies that the collateral is real, valuable enough, el
 
 - Liquidity providers deposit USDC into a shared stability pool.
 - Borrowers lock approved tokenized assets as collateral and draw USDC at zero interest, paying a fixed one-time origination fee instead. Once the drawn amount is repaid, the collateral is unlocked.
-- If the collateral value falls below the required level, XYZ liquidates part of it. Liquidated collateral flows to the stability pool at a discount, which is where liquidity provider returns come from, together with protocol token rewards.
+- If the collateral value falls below the required level, Safix liquidates part of it. Liquidated collateral flows to the stability pool at a discount, which is where liquidity provider returns come from, together with protocol token rewards.
 
 ## Financing model
 
-XYZ charges for events, not for time. There is no time-based interest anywhere in the network.
+Safix charges for events, not for time. There is no time-based interest anywhere in the network.
 
 - Zero-interest credit line, following the peer-to-pool model pioneered by Liquity: a one-time origination fee (for example 0.5%) when funds are drawn and a fixed redemption fee when the position is closed. Debt never grows over time.
 - Profit and loss sharing: for financing tied to a business or a productive asset, the pool provides capital as a partner instead of a creditor. Profit is split at a pre-agreed ratio (for example 60/40). Genuine losses without misconduct or negligence fall on the capital.
 
 ## Privacy layer
 
-XYZ verifies important financial information without exposing the underlying data publicly. The network can confirm that a user:
+Safix verifies important financial information without exposing the underlying data publicly. The network can confirm that a user:
 
 - Owns enough approved collateral
 - Meets identity and eligibility requirements
@@ -45,11 +45,11 @@ The user's identity, exact holdings, wallet balances, and loan details remain co
 
 ## Private collateral passport
 
-XYZ creates a reusable private collateral passport that works across different wallets, blockchains, and lending platforms. Instead of revealing an entire portfolio, a user can provide proof that they have enough verified assets and meet the lender's requirements.
+Safix creates a reusable private collateral passport that works across different wallets, blockchains, and lending platforms. Instead of revealing an entire portfolio, a user can provide proof that they have enough verified assets and meet the lender's requirements.
 
 ## Long-term vision
 
-XYZ aims to become the private credit and collateral layer for onchain finance. Any wallet, lender, RWA platform, or financial application could use XYZ to privately answer one important question:
+Safix aims to become the private credit and collateral layer for onchain finance. Any wallet, lender, RWA platform, or financial application could use Safix to privately answer one important question:
 
 "Can this user safely and legally borrow against these assets?"
 
