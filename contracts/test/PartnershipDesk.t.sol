@@ -124,6 +124,28 @@ contract PartnershipDeskTest is Test {
         vm.stopPrank();
     }
 
+    function testAuditorGatesSettlement() public {
+        address auditor = makeAddr("auditor");
+        desk.setAuditor(auditor);
+
+        uint256 id = _createAndFund();
+        desk.activate(id);
+        vm.prank(operator);
+        desk.reportReturn(id, 120_000e6);
+
+        vm.expectRevert(bytes("needs audit"));
+        desk.settle(id);
+
+        vm.prank(funderA);
+        vm.expectRevert(bytes("not auditor"));
+        desk.approveSettlement(id);
+
+        vm.prank(auditor);
+        desk.approveSettlement(id);
+        desk.settle(id);
+        assertEq(desk.funderPayoutOf(id, funderA), 67_200e6);
+    }
+
     function testFundAfterDeadlineReverts() public {
         uint256 id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 1 days));
         vm.warp(block.timestamp + 2 days);

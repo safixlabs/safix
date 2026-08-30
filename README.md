@@ -55,4 +55,21 @@ Safix aims to become the private credit and collateral layer for onchain finance
 
 ## Repository status
 
-Protocol implementation has not started yet. This repository will host the core network code; see the docs repository for the full product specification.
+The protocol core is implemented and tested.
+
+- `contracts/`: Foundry workspace with SafixPool (stability pool, zero-interest credit line, Chainlink feed pricing, scale-aware loss accounting, liquidation incentive, passport gate), PartnershipDesk (profit and loss sharing with auditor-approved settlement), and PassportRegistry. 35 tests including stateful invariants over randomized action sequences.
+- `keeper/`: viem worker that discovers positions from events, pushes prices for feedless assets, and liquidates unhealthy positions automatically.
+- `docs/`: the information memorandum (markdown, HTML, PDF).
+
+App: [safix-app.vercel.app](https://safix-app.vercel.app) · Documentation: [safix-docs.vercel.app](https://safix-docs.vercel.app)
+
+## Testnet deployment
+
+Fund a key with Robinhood Chain testnet ETH, then:
+
+```
+cd contracts
+PRIVATE_KEY=0x... forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast
+```
+
+Copy the printed addresses into the app's `.env.local` and, for real stock tokens, wire their Chainlink feeds with `setPriceFeed`.

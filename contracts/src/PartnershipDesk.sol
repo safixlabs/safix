@@ -26,7 +26,9 @@ contract PartnershipDesk {
 
     IERC20 public immutable usdc;
     address public owner;
+    address public auditor;
     uint256 public partnershipCount;
+    mapping(uint256 => bool) public settlementApproved;
 
     mapping(uint256 => Partnership) public partnerships;
     mapping(uint256 => mapping(address => uint256)) public contributions;
@@ -35,6 +37,8 @@ contract PartnershipDesk {
     bool private entered;
 
     event OwnerChanged(address indexed newOwner);
+    event AuditorSet(address indexed auditor);
+    event SettlementApproved(uint256 indexed id, address indexed auditor);
     event PartnershipCreated(
         uint256 indexed id,
         address indexed operator,
@@ -70,6 +74,18 @@ contract PartnershipDesk {
     function setOwner(address newOwner) external onlyOwner {
         owner = newOwner;
         emit OwnerChanged(newOwner);
+    }
+
+    function setAuditor(address auditor_) external onlyOwner {
+        auditor = auditor_;
+        emit AuditorSet(auditor_);
+    }
+
+    function approveSettlement(uint256 id) external {
+        require(msg.sender == auditor, "not auditor");
+        require(partnerships[id].status == Status.Active, "not active");
+        settlementApproved[id] = true;
+        emit SettlementApproved(id, msg.sender);
     }
 
     function createPartnership(
@@ -135,6 +151,9 @@ contract PartnershipDesk {
     function settle(uint256 id) external onlyOwner {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Active, "not active");
+        if (auditor != address(0)) {
+            require(settlementApproved[id], "needs audit");
+        }
         partnership.status = Status.Settled;
         emit Settled(id);
     }
