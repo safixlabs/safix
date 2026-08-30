@@ -1,0 +1,288 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity 0.8.26;
+
+import {IERC20} from "./interfaces/IERC20.sol";
+
+contract SafixPool {
+    struct AssetConfig {
+        bool enabled;
+        uint16 maxLtvBps;
+        uint16 liqThresholdBps;
+        uint256 priceUsd1e18;
+    }
+
+    struct Position {
+        uint256 collateral;
+        uint256 debt;
+        uint256 totalDrawn;
+    }
+
+    struct DepositRecord {
+        uint256 rawStake;
+        uint256 snapshotP;
+        mapping(address => uint256) snapshotS;
+    }
+
+    uint256 private constant BPS = 10_000;
+    uint256 private constant P_PRECISION = 1e27;
+
+    IERC20 public immutable usdc;
+    address public owner;
+
+    uint16 public originationFeeBps = 50;
+    uint16 public redemptionFeeBps = 30;
+    uint256 public protocolFees;
+
+    address[] public assetList;
+    mapping(address => AssetConfig) public assetConfig;
+    mapping(address => mapping(address => Position)) public positions;
+
+    uint256 public totalDeposits;
+    uint256 public productP = P_PRECISION;
+    mapping(address => uint256) public sumS;
+    mapping(address => DepositRecord) private depositRecords;
+    mapping(address => mapping(address => uint256)) public pendingGains;
+
+    bool private entered;
+
+    event AssetConfigured(address indexed asset, uint16 maxLtvBps, uint16 liqThresholdBps);
+    event PriceSet(address indexed asset, uint256 priceUsd1e18);
+    event Deposited(address indexed provider, uint256 amount);
+    event Withdrawn(address indexed provider, uint256 amount);
+    event GainsClaimed(address indexed provider, address indexed asset, uint256 amount);
+    event CollateralLocked(address indexed borrower, address indexed asset, uint256 amount);
+    event CollateralWithdrawn(address indexed borrower, address indexed asset, uint256 amount);
+    event Drawn(address indexed borrower, address indexed asset, uint256 amount, uint256 fee);
+    event Repaid(address indexed borrower, address indexed asset, uint256 amount);
+    event PositionClosed(address indexed borrower, address indexed asset, uint256 redemptionFee);
+    event Liquidated(
+        address indexed borrower,
+        address indexed asset,
+        address indexed caller,
+        uint256 debtOffset,
+        uint256 collateralSeized
+    );
+    event FeesCollected(address indexed to, uint256 amount);
+    event OwnerChanged(address indexed newOwner);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    modifier nonReentrant() {
+        require(!entered, "reentrancy");
+        entered = true;
+        _;
+        entered = false;
+    }
+
+    constructor(address usdc_) {
+        usdc = IERC20(usdc_);
+        owner = msg.sender;
+    }
+
+    function setOwner(address newOwner) external onlyOwner {
+        owner = newOwner;
+        emit OwnerChanged(newOwner);
+    }
+
+    function setFees(uint16 originationBps, uint16 redemptionBps) external onlyOwner {
+        require(originationBps <= 500 && redemptionBps <= 500, "fee too high");
+        originationFeeBps = originationBps;
+        redemptionFeeBps = redemptionBps;
+    }
+
+    function configureAsset(
+        address asset,
+        uint16 maxLtvBps,
+        uint16 liqThresholdBps,
+        uint256 priceUsd1e18
+    ) external onlyOwner {
+        require(maxLtvBps < liqThresholdBps && liqThresholdBps <= BPS, "bad config");
+        if (!assetConfig[asset].enabled) assetList.push(asset);
+        assetConfig[asset] =
+            AssetConfig({enabled: true, maxLtvBps: maxLtvBps, liqThresholdBps: liqThresholdBps, priceUsd1e18: priceUsd1e18});
+        emit AssetConfigured(asset, maxLtvBps, liqThresholdBps);
+    }
+
+    function setPrice(address asset, uint256 priceUsd1e18) external onlyOwner {
+        require(assetConfig[asset].enabled, "asset off");
+        assetConfig[asset].priceUsd1e18 = priceUsd1e18;
+        emit PriceSet(asset, priceUsd1e18);
+    }
+
+    function collectProtocolFees(address to) external onlyOwner nonReentrant {
+        uint256 amount = protocolFees;
+        protocolFees = 0;
+        require(usdc.transfer(to, amount), "transfer failed");
+        emit FeesCollected(to, amount);
+    }
+
+    function assetCount() external view returns (uint256) {
+        return assetList.length;
+    }
+
+    function collateralValueUsdc(address asset, uint256 amount) public view returns (uint256) {
+        return (amount * assetConfig[asset].priceUsd1e18) / 1e30;
+    }
+
+    function compoundedDepositOf(address provider) public view returns (uint256) {
+        DepositRecord storage record = depositRecords[provider];
+        if (record.rawStake == 0) return 0;
+        return (record.rawStake * productP) / record.snapshotP;
+    }
+
+    function gainOf(address provider, address asset) public view returns (uint256) {
+        DepositRecord storage record = depositRecords[provider];
+        uint256 pending = pendingGains[provider][asset];
+        if (record.rawStake == 0) return pending;
+        return pending + (record.rawStake * (sumS[asset] - record.snapshotS[asset])) / record.snapshotP;
+    }
+
+    function availableLiquidity() public view returns (uint256) {
+        uint256 balance = usdc.balanceOf(address(this));
+        return balance > protocolFees ? balance - protocolFees : 0;
+    }
+
+    function _realize(address provider) internal {
+        DepositRecord storage record = depositRecords[provider];
+        uint256 compounded = compoundedDepositOf(provider);
+        uint256 count = assetList.length;
+        for (uint256 i = 0; i < count; i++) {
+            address asset = assetList[i];
+            uint256 gain = record.rawStake == 0
+                ? 0
+                : (record.rawStake * (sumS[asset] - record.snapshotS[asset])) / record.snapshotP;
+            if (gain > 0) pendingGains[provider][asset] += gain;
+            record.snapshotS[asset] = sumS[asset];
+        }
+        record.rawStake = compounded;
+        record.snapshotP = productP;
+    }
+
+    function deposit(uint256 amount) external nonReentrant {
+        require(amount > 0, "zero");
+        _realize(msg.sender);
+        DepositRecord storage record = depositRecords[msg.sender];
+        record.rawStake += amount;
+        totalDeposits += amount;
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit Deposited(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) external nonReentrant {
+        _realize(msg.sender);
+        DepositRecord storage record = depositRecords[msg.sender];
+        require(amount > 0 && amount <= record.rawStake, "bad amount");
+        require(amount <= availableLiquidity(), "illiquid");
+        record.rawStake -= amount;
+        totalDeposits -= amount;
+        require(usdc.transfer(msg.sender, amount), "transfer failed");
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    function claimGains(address[] calldata assets) external nonReentrant {
+        _realize(msg.sender);
+        for (uint256 i = 0; i < assets.length; i++) {
+            uint256 amount = pendingGains[msg.sender][assets[i]];
+            if (amount == 0) continue;
+            pendingGains[msg.sender][assets[i]] = 0;
+            require(IERC20(assets[i]).transfer(msg.sender, amount), "transfer failed");
+            emit GainsClaimed(msg.sender, assets[i], amount);
+        }
+    }
+
+    function lockCollateral(address asset, uint256 amount) external nonReentrant {
+        require(assetConfig[asset].enabled, "asset off");
+        require(amount > 0, "zero");
+        positions[msg.sender][asset].collateral += amount;
+        require(IERC20(asset).transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit CollateralLocked(msg.sender, asset, amount);
+    }
+
+    function withdrawCollateral(address asset, uint256 amount) external nonReentrant {
+        Position storage position = positions[msg.sender][asset];
+        require(amount > 0 && amount <= position.collateral, "bad amount");
+        uint256 remaining = position.collateral - amount;
+        if (position.debt > 0 || position.totalDrawn > 0) {
+            require(remaining > 0, "close position instead");
+        }
+        if (position.debt > 0) {
+            uint256 remainingValue = collateralValueUsdc(asset, remaining);
+            require(
+                (remainingValue * assetConfig[asset].maxLtvBps) / BPS >= position.debt,
+                "would break ltv"
+            );
+        }
+        position.collateral = remaining;
+        require(IERC20(asset).transfer(msg.sender, amount), "transfer failed");
+        emit CollateralWithdrawn(msg.sender, asset, amount);
+    }
+
+    function draw(address asset, uint256 amount) external nonReentrant {
+        AssetConfig storage config = assetConfig[asset];
+        require(config.enabled, "asset off");
+        require(amount > 0, "zero");
+        Position storage position = positions[msg.sender][asset];
+        uint256 fee = (amount * originationFeeBps) / BPS;
+        uint256 newDebt = position.debt + amount + fee;
+        uint256 value = collateralValueUsdc(asset, position.collateral);
+        require((value * config.maxLtvBps) / BPS >= newDebt, "exceeds ltv");
+        require(amount <= availableLiquidity(), "illiquid");
+        position.debt = newDebt;
+        position.totalDrawn += amount;
+        protocolFees += fee;
+        require(usdc.transfer(msg.sender, amount), "transfer failed");
+        emit Drawn(msg.sender, asset, amount, fee);
+    }
+
+    function repay(address asset, uint256 amount) external nonReentrant {
+        Position storage position = positions[msg.sender][asset];
+        require(amount > 0 && amount <= position.debt, "bad amount");
+        position.debt -= amount;
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit Repaid(msg.sender, asset, amount);
+    }
+
+    function closePosition(address asset) external nonReentrant {
+        Position storage position = positions[msg.sender][asset];
+        require(position.collateral > 0 || position.debt > 0, "no position");
+        uint256 redemptionFee = (position.totalDrawn * redemptionFeeBps) / BPS;
+        uint256 owed = position.debt + redemptionFee;
+        uint256 collateral = position.collateral;
+        position.collateral = 0;
+        position.debt = 0;
+        position.totalDrawn = 0;
+        protocolFees += redemptionFee;
+        if (owed > 0) {
+            require(usdc.transferFrom(msg.sender, address(this), owed), "transfer failed");
+        }
+        if (collateral > 0) {
+            require(IERC20(asset).transfer(msg.sender, collateral), "transfer failed");
+        }
+        emit PositionClosed(msg.sender, asset, redemptionFee);
+    }
+
+    function isLiquidatable(address borrower, address asset) public view returns (bool) {
+        Position storage position = positions[borrower][asset];
+        if (position.debt == 0) return false;
+        uint256 value = collateralValueUsdc(asset, position.collateral);
+        return (value * assetConfig[asset].liqThresholdBps) / BPS < position.debt;
+    }
+
+    function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
+        require(isLiquidatable(borrower, asset), "healthy");
+        Position storage position = positions[borrower][asset];
+        uint256 offset = debtAmount >= position.debt ? position.debt : debtAmount;
+        require(offset > 0, "zero");
+        require(totalDeposits > offset, "pool too small");
+        uint256 seized = (position.collateral * offset) / position.debt;
+        position.debt -= offset;
+        position.collateral -= seized;
+        sumS[asset] += (seized * productP) / totalDeposits;
+        productP = (productP * (totalDeposits - offset)) / totalDeposits;
+        totalDeposits -= offset;
+        emit Liquidated(borrower, asset, msg.sender, offset, seized);
+    }
+}
