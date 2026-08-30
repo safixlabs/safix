@@ -1,0 +1,9 @@
+{
+  "rpcUrl": "https://rpc.testnet.chain.robinhood.com",
+  "poolAddress": "0x0000000000000000000000000000000000000000",
+  "deployBlock": 0,
+  "intervalMs": 15000,
+  "prices": {
+    "0x0000000000000000000000000000000000000000": 100.42
+  }
+}

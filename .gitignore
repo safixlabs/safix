@@ -7,3 +7,5 @@ target/
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+keeper/node_modules/
+keeper/config.json

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity 0.8.26;
 
+import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IPassportRegistry} from "./interfaces/IPassportRegistry.sol";
 
@@ -38,6 +39,8 @@ contract SafixPool {
     uint256 public maxPriceAge;
     uint256 public protocolFees;
     mapping(address => uint256) public priceUpdatedAt;
+    mapping(address => address) public priceFeeds;
+    mapping(address => uint8) public priceFeedDecimals;
 
     address[] public assetList;
     mapping(address => AssetConfig) public assetConfig;
@@ -71,6 +74,7 @@ contract SafixPool {
     event FeesCollected(address indexed to, uint256 amount);
     event OwnerChanged(address indexed newOwner);
     event PriceUpdaterSet(address indexed updater);
+    event PriceFeedSet(address indexed asset, address indexed feed);
     event PassportRegistrySet(address indexed registry);
     event LiquidationIncentiveSet(uint16 bps);
     event MaxPriceAgeSet(uint256 seconds_);
@@ -146,9 +150,34 @@ contract SafixPool {
         emit PriceSet(asset, priceUsd1e18);
     }
 
+    function setPriceFeed(address asset, address feed) external onlyOwner {
+        require(assetConfig[asset].enabled, "asset off");
+        if (feed != address(0)) {
+            uint8 feedDecimals = IAggregatorV3(feed).decimals();
+            require(feedDecimals <= 18, "bad feed decimals");
+            priceFeedDecimals[asset] = feedDecimals;
+        } else {
+            delete priceFeedDecimals[asset];
+        }
+        priceFeeds[asset] = feed;
+        emit PriceFeedSet(asset, feed);
+    }
+
+    function currentPrice(address asset) public view returns (uint256 price1e18, uint256 updatedAt) {
+        address feed = priceFeeds[asset];
+        if (feed == address(0)) {
+            return (assetConfig[asset].priceUsd1e18, priceUpdatedAt[asset]);
+        }
+        (, int256 answer,, uint256 feedUpdatedAt,) = IAggregatorV3(feed).latestRoundData();
+        require(answer > 0, "bad feed answer");
+        price1e18 = uint256(answer) * 10 ** (18 - priceFeedDecimals[asset]);
+        updatedAt = feedUpdatedAt;
+    }
+
     function _requireFreshPrice(address asset) internal view {
         if (maxPriceAge == 0) return;
-        require(block.timestamp - priceUpdatedAt[asset] <= maxPriceAge, "stale price");
+        (, uint256 updatedAt) = currentPrice(asset);
+        require(block.timestamp - updatedAt <= maxPriceAge, "stale price");
     }
 
     function collectProtocolFees(address to) external onlyOwner nonReentrant {
@@ -163,7 +192,8 @@ contract SafixPool {
     }
 
     function collateralValueUsdc(address asset, uint256 amount) public view returns (uint256) {
-        return (amount * assetConfig[asset].priceUsd1e18) / 1e30;
+        (uint256 price1e18,) = currentPrice(asset);
+        return (amount * price1e18) / 1e30;
     }
 
     function compoundedDepositOf(address provider) public view returns (uint256) {

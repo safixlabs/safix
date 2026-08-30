@@ -1,0 +1,17 @@
+{
+  "name": "safix-keeper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scan": "tsx keeper.ts scan",
+    "watch": "tsx keeper.ts watch"
+  },
+  "dependencies": {
+    "viem": "^2.38.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
