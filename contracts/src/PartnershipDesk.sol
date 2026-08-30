@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity 0.8.26;
+
+import {IERC20} from "./interfaces/IERC20.sol";
+
+contract PartnershipDesk {
+    enum Status {
+        Funding,
+        Active,
+        Settled,
+        Cancelled
+    }
+
+    struct Partnership {
+        address operator;
+        uint16 operatorShareBps;
+        uint64 fundingDeadline;
+        Status status;
+        uint256 fundingGoal;
+        uint256 funded;
+        uint256 returned;
+        bool operatorPaid;
+    }
+
+    uint256 private constant BPS = 10_000;
+
+    IERC20 public immutable usdc;
+    address public owner;
+    uint256 public partnershipCount;
+
+    mapping(uint256 => Partnership) public partnerships;
+    mapping(uint256 => mapping(address => uint256)) public contributions;
+    mapping(uint256 => mapping(address => bool)) public claimed;
+
+    bool private entered;
+
+    event OwnerChanged(address indexed newOwner);
+    event PartnershipCreated(
+        uint256 indexed id,
+        address indexed operator,
+        uint16 operatorShareBps,
+        uint256 fundingGoal,
+        uint64 fundingDeadline
+    );
+    event Funded(uint256 indexed id, address indexed funder, uint256 amount);
+    event Activated(uint256 indexed id, uint256 funded);
+    event Cancelled(uint256 indexed id);
+    event ReturnReported(uint256 indexed id, uint256 amount, uint256 totalReturned);
+    event Settled(uint256 indexed id);
+    event FunderClaimed(uint256 indexed id, address indexed funder, uint256 amount);
+    event OperatorClaimed(uint256 indexed id, address indexed operator, uint256 amount);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    modifier nonReentrant() {
+        require(!entered, "reentrancy");
+        entered = true;
+        _;
+        entered = false;
+    }
+
+    constructor(address usdc_) {
+        usdc = IERC20(usdc_);
+        owner = msg.sender;
+    }
+
+    function setOwner(address newOwner) external onlyOwner {
+        owner = newOwner;
+        emit OwnerChanged(newOwner);
+    }
+
+    function createPartnership(
+        address operator,
+        uint16 operatorShareBps,
+        uint256 fundingGoal,
+        uint64 fundingDeadline
+    ) external onlyOwner returns (uint256 id) {
+        require(operator != address(0), "no operator");
+        require(operatorShareBps <= BPS, "bad share");
+        require(fundingGoal > 0, "no goal");
+        id = partnershipCount++;
+        partnerships[id] = Partnership({
+            operator: operator,
+            operatorShareBps: operatorShareBps,
+            fundingDeadline: fundingDeadline,
+            status: Status.Funding,
+            fundingGoal: fundingGoal,
+            funded: 0,
+            returned: 0,
+            operatorPaid: false
+        });
+        emit PartnershipCreated(id, operator, operatorShareBps, fundingGoal, fundingDeadline);
+    }
+
+    function fund(uint256 id, uint256 amount) external nonReentrant {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Funding, "not funding");
+        require(block.timestamp <= partnership.fundingDeadline, "past deadline");
+        require(amount > 0 && partnership.funded + amount <= partnership.fundingGoal, "bad amount");
+        partnership.funded += amount;
+        contributions[id][msg.sender] += amount;
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit Funded(id, msg.sender, amount);
+    }
+
+    function activate(uint256 id) external onlyOwner nonReentrant {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Funding, "not funding");
+        require(partnership.funded > 0, "unfunded");
+        partnership.status = Status.Active;
+        require(usdc.transfer(partnership.operator, partnership.funded), "transfer failed");
+        emit Activated(id, partnership.funded);
+    }
+
+    function cancel(uint256 id) external onlyOwner {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Funding, "not funding");
+        partnership.status = Status.Cancelled;
+        emit Cancelled(id);
+    }
+
+    function reportReturn(uint256 id, uint256 amount) external nonReentrant {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Active, "not active");
+        require(msg.sender == partnership.operator, "not operator");
+        require(amount > 0, "zero");
+        partnership.returned += amount;
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit ReturnReported(id, amount, partnership.returned);
+    }
+
+    function settle(uint256 id) external onlyOwner {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Active, "not active");
+        partnership.status = Status.Settled;
+        emit Settled(id);
+    }
+
+    function profitOf(uint256 id) public view returns (uint256) {
+        Partnership storage partnership = partnerships[id];
+        return partnership.returned > partnership.funded ? partnership.returned - partnership.funded : 0;
+    }
+
+    function operatorShareOf(uint256 id) public view returns (uint256) {
+        Partnership storage partnership = partnerships[id];
+        return (profitOf(id) * partnership.operatorShareBps) / BPS;
+    }
+
+    function funderPayoutOf(uint256 id, address funder) public view returns (uint256) {
+        Partnership storage partnership = partnerships[id];
+        uint256 contribution = contributions[id][funder];
+        if (contribution == 0 || claimed[id][funder]) return 0;
+        if (partnership.status == Status.Cancelled) return contribution;
+        if (partnership.status != Status.Settled || partnership.funded == 0) return 0;
+        uint256 funderPool = partnership.returned - operatorShareOf(id);
+        return (funderPool * contribution) / partnership.funded;
+    }
+
+    function claim(uint256 id) external nonReentrant {
+        uint256 payout = funderPayoutOf(id, msg.sender);
+        require(
+            partnerships[id].status == Status.Settled || partnerships[id].status == Status.Cancelled,
+            "not claimable"
+        );
+        require(contributions[id][msg.sender] > 0 && !claimed[id][msg.sender], "nothing to claim");
+        claimed[id][msg.sender] = true;
+        if (payout > 0) {
+            require(usdc.transfer(msg.sender, payout), "transfer failed");
+        }
+        emit FunderClaimed(id, msg.sender, payout);
+    }
+
+    function claimOperator(uint256 id) external nonReentrant {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Settled, "not settled");
+        require(msg.sender == partnership.operator, "not operator");
+        require(!partnership.operatorPaid, "paid");
+        partnership.operatorPaid = true;
+        uint256 amount = operatorShareOf(id);
+        if (amount > 0) {
+            require(usdc.transfer(partnership.operator, amount), "transfer failed");
+        }
+        emit OperatorClaimed(id, partnership.operator, amount);
+    }
+}

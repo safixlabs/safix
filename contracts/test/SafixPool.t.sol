@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {SafixPool} from "../src/SafixPool.sol";
+import {PassportRegistry} from "../src/PassportRegistry.sol";
 import {MockERC20} from "../src/MockERC20.sol";
 
 contract SafixPoolTest is Test {
@@ -128,17 +129,67 @@ contract SafixPoolTest is Test {
         assertEq(collateral, 0);
         assertEq(debt, 0);
 
+        assertEq(tbill.balanceOf(keeper), 0.5e18);
         assertApproxEqAbs(pool.compoundedDepositOf(provider), 35_980e6, 1);
         assertApproxEqAbs(pool.compoundedDepositOf(providerTwo), 8_995e6, 1);
-        assertApproxEqAbs(pool.gainOf(provider, address(tbill)), 80e18, 1e12);
-        assertApproxEqAbs(pool.gainOf(providerTwo, address(tbill)), 20e18, 1e12);
+        assertApproxEqAbs(pool.gainOf(provider, address(tbill)), 79.6e18, 1e12);
+        assertApproxEqAbs(pool.gainOf(providerTwo, address(tbill)), 19.9e18, 1e12);
 
         uint256 balanceBefore = tbill.balanceOf(provider);
         address[] memory assets = new address[](1);
         assets[0] = address(tbill);
         vm.prank(provider);
         pool.claimGains(assets);
-        assertApproxEqAbs(tbill.balanceOf(provider) - balanceBefore, 80e18, 1e12);
+        assertApproxEqAbs(tbill.balanceOf(provider) - balanceBefore, 79.6e18, 1e12);
+    }
+
+    function testPriceUpdaterRole() public {
+        pool.setPriceUpdater(keeper);
+        vm.prank(keeper);
+        pool.setPrice(address(tbill), 99e18);
+        (,,, uint256 price) = pool.assetConfig(address(tbill));
+        assertEq(price, 99e18);
+
+        vm.prank(borrower);
+        vm.expectRevert(bytes("not price updater"));
+        pool.setPrice(address(tbill), 1e18);
+    }
+
+    function testStalePriceBlocksDrawAndLiquidate() public {
+        _seedPool(50_000e6);
+        pool.setMaxPriceAge(1 hours);
+
+        vm.startPrank(borrower);
+        pool.lockCollateral(address(tbill), 100e18);
+        vm.warp(block.timestamp + 2 hours);
+        vm.expectRevert(bytes("stale price"));
+        pool.draw(address(tbill), 1_000e6);
+        vm.stopPrank();
+
+        pool.setPrice(address(tbill), 100e18);
+        vm.prank(borrower);
+        pool.draw(address(tbill), 1_000e6);
+    }
+
+    function testPassportGate() public {
+        _seedPool(50_000e6);
+        PassportRegistry registry = new PassportRegistry();
+        pool.setPassportRegistry(address(registry));
+
+        vm.startPrank(borrower);
+        pool.lockCollateral(address(tbill), 100e18);
+        vm.expectRevert(bytes("passport required"));
+        pool.draw(address(tbill), 1_000e6);
+        vm.stopPrank();
+
+        registry.attest(borrower, 0x1f, 0);
+        vm.prank(borrower);
+        pool.draw(address(tbill), 1_000e6);
+
+        registry.revoke(borrower);
+        vm.prank(borrower);
+        vm.expectRevert(bytes("passport required"));
+        pool.draw(address(tbill), 100e6);
     }
 
     function testLiquidateRevertsWhenHealthy() public {
@@ -152,7 +203,7 @@ contract SafixPoolTest is Test {
         vm.startPrank(keeper);
         vm.expectRevert(bytes("not owner"));
         pool.configureAsset(address(tbill), 5000, 6000, 1e18);
-        vm.expectRevert(bytes("not owner"));
+        vm.expectRevert(bytes("not price updater"));
         pool.setPrice(address(tbill), 1e18);
         vm.expectRevert(bytes("not owner"));
         pool.collectProtocolFees(keeper);

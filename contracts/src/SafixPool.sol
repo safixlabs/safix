@@ -2,6 +2,7 @@
 pragma solidity 0.8.26;
 
 import {IERC20} from "./interfaces/IERC20.sol";
+import {IPassportRegistry} from "./interfaces/IPassportRegistry.sol";
 
 contract SafixPool {
     struct AssetConfig {
@@ -28,10 +29,15 @@ contract SafixPool {
 
     IERC20 public immutable usdc;
     address public owner;
+    address public priceUpdater;
+    address public passportRegistry;
 
     uint16 public originationFeeBps = 50;
     uint16 public redemptionFeeBps = 30;
+    uint16 public liquidationIncentiveBps = 50;
+    uint256 public maxPriceAge;
     uint256 public protocolFees;
+    mapping(address => uint256) public priceUpdatedAt;
 
     address[] public assetList;
     mapping(address => AssetConfig) public assetConfig;
@@ -64,6 +70,10 @@ contract SafixPool {
     );
     event FeesCollected(address indexed to, uint256 amount);
     event OwnerChanged(address indexed newOwner);
+    event PriceUpdaterSet(address indexed updater);
+    event PassportRegistrySet(address indexed registry);
+    event LiquidationIncentiveSet(uint16 bps);
+    event MaxPriceAgeSet(uint256 seconds_);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -93,6 +103,27 @@ contract SafixPool {
         redemptionFeeBps = redemptionBps;
     }
 
+    function setPriceUpdater(address updater) external onlyOwner {
+        priceUpdater = updater;
+        emit PriceUpdaterSet(updater);
+    }
+
+    function setPassportRegistry(address registry) external onlyOwner {
+        passportRegistry = registry;
+        emit PassportRegistrySet(registry);
+    }
+
+    function setLiquidationIncentive(uint16 bps) external onlyOwner {
+        require(bps <= 200, "too high");
+        liquidationIncentiveBps = bps;
+        emit LiquidationIncentiveSet(bps);
+    }
+
+    function setMaxPriceAge(uint256 seconds_) external onlyOwner {
+        maxPriceAge = seconds_;
+        emit MaxPriceAgeSet(seconds_);
+    }
+
     function configureAsset(
         address asset,
         uint16 maxLtvBps,
@@ -103,13 +134,21 @@ contract SafixPool {
         if (!assetConfig[asset].enabled) assetList.push(asset);
         assetConfig[asset] =
             AssetConfig({enabled: true, maxLtvBps: maxLtvBps, liqThresholdBps: liqThresholdBps, priceUsd1e18: priceUsd1e18});
+        priceUpdatedAt[asset] = block.timestamp;
         emit AssetConfigured(asset, maxLtvBps, liqThresholdBps);
     }
 
-    function setPrice(address asset, uint256 priceUsd1e18) external onlyOwner {
+    function setPrice(address asset, uint256 priceUsd1e18) external {
+        require(msg.sender == owner || msg.sender == priceUpdater, "not price updater");
         require(assetConfig[asset].enabled, "asset off");
         assetConfig[asset].priceUsd1e18 = priceUsd1e18;
+        priceUpdatedAt[asset] = block.timestamp;
         emit PriceSet(asset, priceUsd1e18);
+    }
+
+    function _requireFreshPrice(address asset) internal view {
+        if (maxPriceAge == 0) return;
+        require(block.timestamp - priceUpdatedAt[asset] <= maxPriceAge, "stale price");
     }
 
     function collectProtocolFees(address to) external onlyOwner nonReentrant {
@@ -209,6 +248,7 @@ contract SafixPool {
             require(remaining > 0, "close position instead");
         }
         if (position.debt > 0) {
+            _requireFreshPrice(asset);
             uint256 remainingValue = collateralValueUsdc(asset, remaining);
             require(
                 (remainingValue * assetConfig[asset].maxLtvBps) / BPS >= position.debt,
@@ -224,6 +264,10 @@ contract SafixPool {
         AssetConfig storage config = assetConfig[asset];
         require(config.enabled, "asset off");
         require(amount > 0, "zero");
+        _requireFreshPrice(asset);
+        if (passportRegistry != address(0)) {
+            require(IPassportRegistry(passportRegistry).isEligible(msg.sender), "passport required");
+        }
         Position storage position = positions[msg.sender][asset];
         uint256 fee = (amount * originationFeeBps) / BPS;
         uint256 newDebt = position.debt + amount + fee;
@@ -272,17 +316,23 @@ contract SafixPool {
     }
 
     function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
+        _requireFreshPrice(asset);
         require(isLiquidatable(borrower, asset), "healthy");
         Position storage position = positions[borrower][asset];
         uint256 offset = debtAmount >= position.debt ? position.debt : debtAmount;
         require(offset > 0, "zero");
         require(totalDeposits > offset, "pool too small");
         uint256 seized = (position.collateral * offset) / position.debt;
+        uint256 incentive = (seized * liquidationIncentiveBps) / BPS;
+        uint256 poolShare = seized - incentive;
         position.debt -= offset;
         position.collateral -= seized;
-        sumS[asset] += (seized * productP) / totalDeposits;
+        sumS[asset] += (poolShare * productP) / totalDeposits;
         productP = (productP * (totalDeposits - offset)) / totalDeposits;
         totalDeposits -= offset;
+        if (incentive > 0) {
+            require(IERC20(asset).transfer(msg.sender, incentive), "transfer failed");
+        }
         emit Liquidated(borrower, asset, msg.sender, offset, seized);
     }
 }
