@@ -306,7 +306,7 @@
   </header>
 
   <h1>Unlock capital.<br><span>Keep ownership.</span></h1>
-  <p class="meta">Draft v1 · August 2026 · Safix, the private credit layer for tokenized assets</p>
+  <p class="meta">Draft v1.1 · August 2026 · Safix, the private credit layer for tokenized assets</p>
 
   <p class="lede">
     Tokenization solved ownership. It did not solve two things that follow from it: everything you own
@@ -393,6 +393,15 @@
     makes Safix buildable now and not five years ago.
   </p>
 
+  <h2>The chain</h2>
+  <p>
+    Safix builds on Robinhood Chain, the Arbitrum Orbit rollup where tokenized equities are issued.
+    Stock Tokens there are standard, unrestricted ERC-20s, and every one ships with a dedicated
+    Chainlink price feed. That means Safix can accept them as collateral without issuer permission and
+    price them without building an oracle. The pool denominates in whichever dollar stablecoin has the
+    deepest local liquidity.
+  </p>
+
   <h2>What exists today</h2>
   <p>
     Onchain lending bluechips price everything in public and mostly against crypto-native collateral.
@@ -408,11 +417,14 @@
 
   <h2>Where we are</h2>
   <p>
-    Safix is at the beginning, and this memorandum is written from there on purpose. The site is live
-    with a working protocol terminal, and the documentation describing the full model, from fee schedule
-    to loss rules, is drafted. The immediate work is narrow: lock the collateral verification design,
-    ship the passport prototype, stand up the stability pool on testnet, and land the first RWA issuer
-    integration. Everything else in this document is earned after that.
+    Safix is past the paper stage. The protocol core is implemented and tested: a stability pool with
+    Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated
+    credit line, thirty tests green. The pool reads the per-asset Chainlink feeds Robinhood Chain
+    ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and
+    the full lifecycle has been exercised end to end on a devnet: draw, price drop, automated
+    liquidation, provider gains, partnership settlement. The app and the documentation are live. The
+    immediate work is narrower than ever: deploy to Robinhood Chain testnet, wire the real feeds, and
+    put the first tokenized treasuries behind the pool.
   </p>
 
   <h2>Risks, honestly</h2>

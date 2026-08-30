@@ -22,11 +22,14 @@ contract SafixPool {
     struct DepositRecord {
         uint256 rawStake;
         uint256 snapshotP;
+        uint256 snapshotScale;
         mapping(address => uint256) snapshotS;
     }
 
     uint256 private constant BPS = 10_000;
     uint256 private constant P_PRECISION = 1e27;
+    uint256 private constant SCALE_FACTOR = 1e9;
+    uint256 private constant P_MIN = P_PRECISION / SCALE_FACTOR;
 
     IERC20 public immutable usdc;
     address public owner;
@@ -48,7 +51,8 @@ contract SafixPool {
 
     uint256 public totalDeposits;
     uint256 public productP = P_PRECISION;
-    mapping(address => uint256) public sumS;
+    uint256 public currentScale;
+    mapping(uint256 => mapping(address => uint256)) public sumS;
     mapping(address => DepositRecord) private depositRecords;
     mapping(address => mapping(address => uint256)) public pendingGains;
 
@@ -199,14 +203,23 @@ contract SafixPool {
     function compoundedDepositOf(address provider) public view returns (uint256) {
         DepositRecord storage record = depositRecords[provider];
         if (record.rawStake == 0) return 0;
-        return (record.rawStake * productP) / record.snapshotP;
+        uint256 scaleDiff = currentScale - record.snapshotScale;
+        if (scaleDiff == 0) return (record.rawStake * productP) / record.snapshotP;
+        if (scaleDiff == 1) return (record.rawStake * productP) / record.snapshotP / SCALE_FACTOR;
+        return 0;
+    }
+
+    function _gainSince(DepositRecord storage record, address asset) internal view returns (uint256) {
+        if (record.rawStake == 0) return 0;
+        uint256 firstPortion = sumS[record.snapshotScale][asset] - record.snapshotS[asset];
+        uint256 secondPortion =
+            currentScale > record.snapshotScale ? sumS[record.snapshotScale + 1][asset] / SCALE_FACTOR : 0;
+        return (record.rawStake * (firstPortion + secondPortion)) / record.snapshotP;
     }
 
     function gainOf(address provider, address asset) public view returns (uint256) {
         DepositRecord storage record = depositRecords[provider];
-        uint256 pending = pendingGains[provider][asset];
-        if (record.rawStake == 0) return pending;
-        return pending + (record.rawStake * (sumS[asset] - record.snapshotS[asset])) / record.snapshotP;
+        return pendingGains[provider][asset] + _gainSince(record, asset);
     }
 
     function availableLiquidity() public view returns (uint256) {
@@ -220,14 +233,13 @@ contract SafixPool {
         uint256 count = assetList.length;
         for (uint256 i = 0; i < count; i++) {
             address asset = assetList[i];
-            uint256 gain = record.rawStake == 0
-                ? 0
-                : (record.rawStake * (sumS[asset] - record.snapshotS[asset])) / record.snapshotP;
+            uint256 gain = _gainSince(record, asset);
             if (gain > 0) pendingGains[provider][asset] += gain;
-            record.snapshotS[asset] = sumS[asset];
+            record.snapshotS[asset] = sumS[currentScale][asset];
         }
         record.rawStake = compounded;
         record.snapshotP = productP;
+        record.snapshotScale = currentScale;
     }
 
     function deposit(uint256 amount) external nonReentrant {
@@ -357,8 +369,13 @@ contract SafixPool {
         uint256 poolShare = seized - incentive;
         position.debt -= offset;
         position.collateral -= seized;
-        sumS[asset] += (poolShare * productP) / totalDeposits;
-        productP = (productP * (totalDeposits - offset)) / totalDeposits;
+        sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
+        uint256 newP = (productP * (totalDeposits - offset)) / totalDeposits;
+        while (newP < P_MIN) {
+            currentScale += 1;
+            newP *= SCALE_FACTOR;
+        }
+        productP = newP;
         totalDeposits -= offset;
         if (incentive > 0) {
             require(IERC20(asset).transfer(msg.sender, incentive), "transfer failed");

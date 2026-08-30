@@ -1,6 +1,6 @@
 # Safix: unlock capital, keep ownership
 
-Information memorandum, draft v1, August 2026
+Information memorandum, draft v1.1, August 2026
 
 Tokenization solved ownership. It did not solve two things that follow from it: everything you own onchain is public, and almost nothing you own onchain can be borrowed against. Safix is a private credit layer that fixes both. Lock tokenized real-world assets as collateral, draw USDC at zero interest, and prove you qualify without showing anyone your portfolio.
 
@@ -41,13 +41,17 @@ The credit passport makes this reusable. Verified once, a borrower can present p
 
 Three curves crossed. The issuance layer matured: platforms like Securitize, Centrifuge, Backed, and Ondo turned tokenized treasuries, funds, and equities into a real market. Stablecoin credit demand proved itself onchain, but at rates and disclosure levels that keep serious collateral away. And proof systems became practical enough to verify claims about assets without publishing the assets themselves. The first two created the market. The third makes Safix buildable now and not five years ago.
 
+## The chain
+
+Safix builds on Robinhood Chain, the Arbitrum Orbit rollup where tokenized equities are issued. Stock Tokens there are standard, unrestricted ERC-20s, and every one ships with a dedicated Chainlink price feed. That means Safix can accept them as collateral without issuer permission and price them without building an oracle. The pool denominates in whichever dollar stablecoin has the deepest local liquidity.
+
 ## What exists today
 
 Onchain lending bluechips price everything in public and mostly against crypto-native collateral. RWA lending desks are institutional, slow, and paperwork-bound. Privacy tools hide transfers but answer no questions, which is exactly backwards for credit, where the counterparty must learn something. Safix sits in the gap: it answers the credit questions and hides everything else. The defensible part is the passport. Every verification strengthens a reusable identity that borrowers will not want to rebuild elsewhere, and every integrated platform makes it more useful to hold one.
 
 ## Where we are
 
-Safix is at the beginning, and this memorandum is written from there on purpose. The site is live with a working protocol terminal, and the documentation describing the full model, from fee schedule to loss rules, is drafted. The immediate work is narrow: lock the collateral verification design, ship the passport prototype, stand up the stability pool on testnet, and land the first RWA issuer integration. Everything else in this document is earned after that.
+Safix is past the paper stage. The protocol core is implemented and tested: a stability pool with Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated credit line, thirty tests green. The pool reads the per-asset Chainlink feeds Robinhood Chain ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and the full lifecycle has been exercised end to end on a devnet: draw, price drop, automated liquidation, provider gains, partnership settlement. The app and the documentation are live. The immediate work is narrower than ever: deploy to Robinhood Chain testnet, wire the real feeds, and put the first tokenized treasuries behind the pool.
 
 ## Risks, honestly
 
