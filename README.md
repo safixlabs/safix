@@ -72,4 +72,10 @@ cd contracts
 PRIVATE_KEY=0x... forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast
 ```
 
-Copy the printed addresses into the app's `.env.local` and, for real stock tokens, wire their Chainlink feeds with `setPriceFeed`.
+Then wire the app and the keeper straight from the broadcast:
+
+```
+node scripts/wire-env.mjs testnet
+```
+
+That writes the app's `.env.local` and `keeper/config.json` from the deployed addresses. For real stock tokens, wire their Chainlink feeds with `setPriceFeed`.
