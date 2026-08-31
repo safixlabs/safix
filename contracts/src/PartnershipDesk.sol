@@ -72,6 +72,7 @@ contract PartnershipDesk {
     }
 
     function setOwner(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "zero owner");
         owner = newOwner;
         emit OwnerChanged(newOwner);
     }

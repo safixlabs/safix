@@ -82,6 +82,7 @@ contract SafixPool {
     event PassportRegistrySet(address indexed registry);
     event LiquidationIncentiveSet(uint16 bps);
     event MaxPriceAgeSet(uint256 seconds_);
+    event FeesSet(uint16 originationBps, uint16 redemptionBps);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -101,6 +102,7 @@ contract SafixPool {
     }
 
     function setOwner(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "zero owner");
         owner = newOwner;
         emit OwnerChanged(newOwner);
     }
@@ -109,6 +111,7 @@ contract SafixPool {
         require(originationBps <= 500 && redemptionBps <= 500, "fee too high");
         originationFeeBps = originationBps;
         redemptionFeeBps = redemptionBps;
+        emit FeesSet(originationBps, redemptionBps);
     }
 
     function setPriceUpdater(address updater) external onlyOwner {
@@ -174,6 +177,7 @@ contract SafixPool {
         }
         (, int256 answer,, uint256 feedUpdatedAt,) = IAggregatorV3(feed).latestRoundData();
         require(answer > 0, "bad feed answer");
+        require(feedUpdatedAt > 0, "bad feed round");
         price1e18 = uint256(answer) * 10 ** (18 - priceFeedDecimals[asset]);
         updatedAt = feedUpdatedAt;
     }
