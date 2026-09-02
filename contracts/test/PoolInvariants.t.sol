@@ -60,7 +60,7 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         pool.lockCollateral(address(tbill), collateralAmount);
 
         (uint256 collateral, uint256 debt,) = pool.positions(borrower, address(tbill));
-        uint256 value = pool.collateralValueUsdc(address(tbill), collateral);
+        uint256 value = pool.collateralValueStable(address(tbill), collateral);
         uint256 capacity = (value * 8000) / 10_000;
         uint256 headroom = capacity > debt ? capacity - debt : 0;
         uint256 maxDraw = (headroom * 10_000) / (10_000 + pool.originationFeeBps());

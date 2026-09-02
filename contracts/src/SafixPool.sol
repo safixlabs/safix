@@ -31,7 +31,7 @@ contract SafixPool {
     uint256 private constant SCALE_FACTOR = 1e9;
     uint256 private constant P_MIN = P_PRECISION / SCALE_FACTOR;
 
-    IERC20 public immutable usdc;
+    IERC20 public immutable stable;
     address public owner;
     address public priceUpdater;
     address public passportRegistry;
@@ -96,8 +96,8 @@ contract SafixPool {
         entered = false;
     }
 
-    constructor(address usdc_) {
-        usdc = IERC20(usdc_);
+    constructor(address stable_) {
+        stable = IERC20(stable_);
         owner = msg.sender;
     }
 
@@ -191,7 +191,7 @@ contract SafixPool {
     function collectProtocolFees(address to) external onlyOwner nonReentrant {
         uint256 amount = protocolFees;
         protocolFees = 0;
-        require(usdc.transfer(to, amount), "transfer failed");
+        require(stable.transfer(to, amount), "transfer failed");
         emit FeesCollected(to, amount);
     }
 
@@ -199,7 +199,7 @@ contract SafixPool {
         return assetList.length;
     }
 
-    function collateralValueUsdc(address asset, uint256 amount) public view returns (uint256) {
+    function collateralValueStable(address asset, uint256 amount) public view returns (uint256) {
         (uint256 price1e18,) = currentPrice(asset);
         return (amount * price1e18) / 1e30;
     }
@@ -227,7 +227,7 @@ contract SafixPool {
     }
 
     function availableLiquidity() public view returns (uint256) {
-        uint256 balance = usdc.balanceOf(address(this));
+        uint256 balance = stable.balanceOf(address(this));
         return balance > protocolFees ? balance - protocolFees : 0;
     }
 
@@ -252,7 +252,7 @@ contract SafixPool {
         DepositRecord storage record = depositRecords[msg.sender];
         record.rawStake += amount;
         totalDeposits += amount;
-        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit Deposited(msg.sender, amount);
     }
 
@@ -263,7 +263,7 @@ contract SafixPool {
         require(amount <= availableLiquidity(), "illiquid");
         record.rawStake -= amount;
         totalDeposits -= amount;
-        require(usdc.transfer(msg.sender, amount), "transfer failed");
+        require(stable.transfer(msg.sender, amount), "transfer failed");
         emit Withdrawn(msg.sender, amount);
     }
 
@@ -295,7 +295,7 @@ contract SafixPool {
         }
         if (position.debt > 0) {
             _requireFreshPrice(asset);
-            uint256 remainingValue = collateralValueUsdc(asset, remaining);
+            uint256 remainingValue = collateralValueStable(asset, remaining);
             require(
                 (remainingValue * assetConfig[asset].maxLtvBps) / BPS >= position.debt,
                 "would break ltv"
@@ -317,13 +317,13 @@ contract SafixPool {
         Position storage position = positions[msg.sender][asset];
         uint256 fee = (amount * originationFeeBps) / BPS;
         uint256 newDebt = position.debt + amount + fee;
-        uint256 value = collateralValueUsdc(asset, position.collateral);
+        uint256 value = collateralValueStable(asset, position.collateral);
         require((value * config.maxLtvBps) / BPS >= newDebt, "exceeds ltv");
         require(amount <= availableLiquidity(), "illiquid");
         position.debt = newDebt;
         position.totalDrawn += amount;
         protocolFees += fee;
-        require(usdc.transfer(msg.sender, amount), "transfer failed");
+        require(stable.transfer(msg.sender, amount), "transfer failed");
         emit Drawn(msg.sender, asset, amount, fee);
     }
 
@@ -331,7 +331,7 @@ contract SafixPool {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.debt, "bad amount");
         position.debt -= amount;
-        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit Repaid(msg.sender, asset, amount);
     }
 
@@ -346,7 +346,7 @@ contract SafixPool {
         position.totalDrawn = 0;
         protocolFees += redemptionFee;
         if (owed > 0) {
-            require(usdc.transferFrom(msg.sender, address(this), owed), "transfer failed");
+            require(stable.transferFrom(msg.sender, address(this), owed), "transfer failed");
         }
         if (collateral > 0) {
             require(IERC20(asset).transfer(msg.sender, collateral), "transfer failed");
@@ -357,7 +357,7 @@ contract SafixPool {
     function isLiquidatable(address borrower, address asset) public view returns (bool) {
         Position storage position = positions[borrower][asset];
         if (position.debt == 0) return false;
-        uint256 value = collateralValueUsdc(asset, position.collateral);
+        uint256 value = collateralValueStable(asset, position.collateral);
         return (value * assetConfig[asset].liqThresholdBps) / BPS < position.debt;
     }
 

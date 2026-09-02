@@ -24,7 +24,7 @@ contract PartnershipDesk {
 
     uint256 private constant BPS = 10_000;
 
-    IERC20 public immutable usdc;
+    IERC20 public immutable stable;
     address public owner;
     address public auditor;
     uint256 public partnershipCount;
@@ -66,8 +66,8 @@ contract PartnershipDesk {
         entered = false;
     }
 
-    constructor(address usdc_) {
-        usdc = IERC20(usdc_);
+    constructor(address stable_) {
+        stable = IERC20(stable_);
         owner = msg.sender;
     }
 
@@ -119,7 +119,7 @@ contract PartnershipDesk {
         require(amount > 0 && partnership.funded + amount <= partnership.fundingGoal, "bad amount");
         partnership.funded += amount;
         contributions[id][msg.sender] += amount;
-        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit Funded(id, msg.sender, amount);
     }
 
@@ -128,7 +128,7 @@ contract PartnershipDesk {
         require(partnership.status == Status.Funding, "not funding");
         require(partnership.funded > 0, "unfunded");
         partnership.status = Status.Active;
-        require(usdc.transfer(partnership.operator, partnership.funded), "transfer failed");
+        require(stable.transfer(partnership.operator, partnership.funded), "transfer failed");
         emit Activated(id, partnership.funded);
     }
 
@@ -145,7 +145,7 @@ contract PartnershipDesk {
         require(msg.sender == partnership.operator, "not operator");
         require(amount > 0, "zero");
         partnership.returned += amount;
-        require(usdc.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit ReturnReported(id, amount, partnership.returned);
     }
 
@@ -188,7 +188,7 @@ contract PartnershipDesk {
         require(contributions[id][msg.sender] > 0 && !claimed[id][msg.sender], "nothing to claim");
         claimed[id][msg.sender] = true;
         if (payout > 0) {
-            require(usdc.transfer(msg.sender, payout), "transfer failed");
+            require(stable.transfer(msg.sender, payout), "transfer failed");
         }
         emit FunderClaimed(id, msg.sender, payout);
     }
@@ -201,7 +201,7 @@ contract PartnershipDesk {
         partnership.operatorPaid = true;
         uint256 amount = operatorShareOf(id);
         if (amount > 0) {
-            require(usdc.transfer(partnership.operator, amount), "transfer failed");
+            require(stable.transfer(partnership.operator, amount), "transfer failed");
         }
         emit OperatorClaimed(id, partnership.operator, amount);
     }

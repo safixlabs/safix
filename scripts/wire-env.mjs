@@ -39,8 +39,8 @@ for (const tx of creates) {
   }
 }
 
-const usdc = bySymbol.tUSDG
-if (!pool || !usdc) {
+const stable = bySymbol.tUSDG
+if (!pool || !stable) {
   console.error("broadcast is missing the pool or the stable token; run the deploy script first")
   process.exit(1)
 }
@@ -54,7 +54,7 @@ const envLines = [
   `NEXT_PUBLIC_CHAIN=${chain.name}`,
   "NEXT_PUBLIC_RPC_OVERRIDE=",
   `NEXT_PUBLIC_POOL_ADDRESS=${pool}`,
-  `NEXT_PUBLIC_USDC_ADDRESS=${usdc}`,
+  `NEXT_PUBLIC_USDG_ADDRESS=${stable}`,
   `NEXT_PUBLIC_REGISTRY_ADDRESS=${registry ?? ""}`,
   `NEXT_PUBLIC_DESK_ADDRESS=${desk ?? ""}`,
   `NEXT_PUBLIC_ASSET_TBILL=${bySymbol.tBILL ?? ""}`,

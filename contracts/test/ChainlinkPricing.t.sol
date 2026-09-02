@@ -42,7 +42,7 @@ contract ChainlinkPricingTest is Test {
         (uint256 price, uint256 updatedAt) = pool.currentPrice(address(bnvda));
         assertEq(price, 172.35e18);
         assertEq(updatedAt, block.timestamp);
-        assertEq(pool.collateralValueUsdc(address(bnvda), 100e18), 17_235e6);
+        assertEq(pool.collateralValueStable(address(bnvda), 100e18), 17_235e6);
     }
 
     function testDrawUsesFeedPrice() public {
