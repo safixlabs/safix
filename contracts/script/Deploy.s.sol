@@ -12,7 +12,7 @@ contract Deploy is Script {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerKey);
 
-        MockERC20 usdc = new MockERC20("Safix Test USD", "tUSDC", 6);
+        MockERC20 usdc = new MockERC20("Safix Test USD", "tUSDG", 6);
         MockERC20 tbill = new MockERC20("Tokenized treasury 3M", "tBILL", 18);
         MockERC20 bnvda = new MockERC20("Tokenized Nvidia", "bNVDA", 18);
         MockERC20 tgold = new MockERC20("Tokenized gold", "tGOLD", 18);

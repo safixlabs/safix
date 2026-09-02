@@ -2,7 +2,7 @@
 
 Information memorandum, draft v1.1, August 2026
 
-Tokenization solved ownership. It did not solve two things that follow from it: everything you own onchain is public, and almost nothing you own onchain can be borrowed against. Safix is a private credit layer that fixes both. Lock tokenized real-world assets as collateral, draw USDC at zero interest, and prove you qualify without showing anyone your portfolio.
+Tokenization solved ownership. It did not solve two things that follow from it: everything you own onchain is public, and almost nothing you own onchain can be borrowed against. Safix is a private credit layer that fixes both. Lock tokenized real-world assets as collateral, draw USDG at zero interest, and prove you qualify without showing anyone your portfolio.
 
 ## The problem
 
@@ -17,7 +17,7 @@ The second problem compounds the first. Blockchains are public by default. A wal
 Safix is a private credit layer for tokenized assets. Four parts make it work:
 
 - Collateral risk checks. Before any loan, the protocol privately verifies that the collateral is real, valuable enough, eligible, and not already pledged elsewhere, and that the borrower's existing debt is acceptable.
-- Zero-interest credit. Borrowers draw USDC against locked collateral for a fixed one-time fee. Debt never grows with time. The full cost is known on day one.
+- Zero-interest credit. Borrowers draw USDG against locked collateral for a fixed one-time fee. Debt never grows with time. The full cost is known on day one.
 - Reusable credit passports. A portable, private proof of borrowing power that works across wallets, chains, and lending platforms. Counterparties see eligibility signals only. Holdings disclosed: zero percent.
 - Collateral control plane. One view of collateral health, available credit, and every attestation in force, so a borrower always knows where they stand.
 
@@ -25,7 +25,7 @@ Safix is a private credit layer for tokenized assets. Four parts make it work:
 
 There is no time-based interest anywhere in the network. Safix charges for events, not for time.
 
-The credit line follows the peer-to-pool model pioneered by Liquity. Liquidity providers fund a stability pool with USDC. Borrowers lock collateral and draw from it, paying a one-time origination fee, then a fixed redemption fee when the position closes. If collateral value falls below the required level, part of it is liquidated: the pool absorbs the debt and receives the collateral at a discount. That flow, together with protocol rewards, is where provider returns come from. Providers earn from real events in the network, not from the passage of time.
+The credit line follows the peer-to-pool model pioneered by Liquity. Liquidity providers fund a stability pool with USDG. Borrowers lock collateral and draw from it, paying a one-time origination fee, then a fixed redemption fee when the position closes. If collateral value falls below the required level, part of it is liquidated: the pool absorbs the debt and receives the collateral at a discount. That flow, together with protocol rewards, is where provider returns come from. Providers earn from real events in the network, not from the passage of time.
 
 For financing tied to a business or a productive asset, Safix replaces the creditor relationship with a partnership. The pool provides capital, the financed party operates it, and profit is split at a pre-agreed ratio. Genuine losses without misconduct fall on the capital. Whoever funds a venture carries its risk, which is how credit stays honest.
 

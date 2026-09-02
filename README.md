@@ -20,8 +20,8 @@ The platform privately verifies that the collateral is real, valuable enough, el
 
 ## How it works
 
-- Liquidity providers deposit USDC into a shared stability pool.
-- Borrowers lock approved tokenized assets as collateral and draw USDC at zero interest, paying a fixed one-time origination fee instead. Once the drawn amount is repaid, the collateral is unlocked.
+- Liquidity providers deposit USDG into a shared stability pool.
+- Borrowers lock approved tokenized assets as collateral and draw USDG at zero interest, paying a fixed one-time origination fee instead. Once the drawn amount is repaid, the collateral is unlocked.
 - If the collateral value falls below the required level, Safix liquidates part of it. Liquidated collateral flows to the stability pool at a discount, which is where liquidity provider returns come from, together with protocol token rewards.
 
 ## Financing model

@@ -39,7 +39,7 @@ for (const tx of creates) {
   }
 }
 
-const usdc = bySymbol.tUSDC
+const usdc = bySymbol.tUSDG
 if (!pool || !usdc) {
   console.error("broadcast is missing the pool or the stable token; run the deploy script first")
   process.exit(1)
