@@ -71,6 +71,28 @@ Delivery is a webhook, in a shape both Slack and Discord accept, so the channel 
 
 `npm run drill` fires one of every alert so the channel, the routing and the on-call rotation can be tested without waiting for a real incident.
 
+## Finding positions
+
+The keeper has to know which borrower and asset pairs exist before it can ask whether any of them
+are liquidatable. There are two ways, and it prefers the cheap one without depending on it.
+
+**From the index**, when `indexer.url` (or `INDEXER_URL`) is set: one request for the open
+positions. The keeper checks `/status` first and refuses an index that is more than
+`indexer.maxLagBlocks` behind the head — an index that is behind still *answers*, so the fallback
+would never fire, and the positions it omits are the newest ones, which are the likeliest to be
+undercollateralised. Rows are validated as addresses before they reach a contract call: the index
+is a service the keeper does not control.
+
+**From the logs**, otherwise, or whenever the index does not answer in `indexer.timeoutMs`: replay
+every `Drawn` event from the deploy block. This is what the keeper did before the index existed. It
+is self-sufficient and correct, and it gets slower every day — Robinhood Chain produces around
+689,000 blocks a day, so the scan grows without bound.
+
+That order is deliberate in both directions. The index makes the keeper cheaper; it is never
+allowed to make it fragile. **Liquidation is the one thing in the protocol that must not wait on a
+service the team runs.** There are tests for both paths, and the fallback is exercised by pointing
+the keeper at a port with nothing on it.
+
 ## Running more than one
 
 Safe, and worth doing: two keepers in different regions survive one host going down.
@@ -93,4 +115,4 @@ A price the pool refuses — outside the asset's band, or moving further than it
 
 It is permissionless. Liquidating needs no allowlist, no passport and no relationship with the protocol — only a funded key. The pool is better off with several independent keepers than with one, so competition here is the design rather than a tolerated side effect.
 
-Config fields: `rpcUrl`, `poolAddress`, optional `deployBlock` (start of the event scan), `intervalMs`, `logChunkBlocks` (largest span per `getLogs`, for RPCs that cap it), `instanceId`, `prices` as checksummed asset address to USD price, plus the `alerts` and `gas` blocks described above.
+Config fields: `rpcUrl`, `poolAddress`, optional `deployBlock` (start of the event scan), `intervalMs`, `logChunkBlocks` (largest span per `getLogs`, for RPCs that cap it), `instanceId`, `prices` as checksummed asset address to USD price, plus the `alerts`, `gas` and `indexer` blocks described above.

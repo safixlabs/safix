@@ -1,0 +1,14 @@
+{
+  "rpcUrl": "https://rpc.testnet.chain.robinhood.com",
+  "poolAddress": "0x0000000000000000000000000000000000000000",
+  "deskAddress": null,
+  "registryAddress": null,
+  "deployBlock": 0,
+  "intervalMs": 20000,
+  "databasePath": "./safix-index.db",
+  "port": 8080,
+  "logChunkBlocks": 200000000,
+  "reorgDepthBlocks": 12000,
+  "timestampBatchSize": 100,
+  "instanceId": "indexer-1"
+}

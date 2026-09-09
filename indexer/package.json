@@ -1,0 +1,21 @@
+{
+  "name": "safix-indexer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "tsx indexer.ts sync",
+    "watch": "tsx indexer.ts watch",
+    "serve": "tsx indexer.ts serve",
+    "status": "tsx indexer.ts status",
+    "reconcile": "tsx indexer.ts reconcile",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "viem": "^2.38.0",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

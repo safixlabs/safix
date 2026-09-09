@@ -63,7 +63,10 @@ const derived = {
   NEXT_PUBLIC_DESK_ADDRESS: desk ?? "",
   NEXT_PUBLIC_ASSET_TBILL: bySymbol.tBILL ?? "",
   NEXT_PUBLIC_ASSET_BNVDA: bySymbol.bNVDA ?? "",
-  NEXT_PUBLIC_ASSET_TGOLD: bySymbol.tGOLD ?? ""
+  NEXT_PUBLIC_ASSET_TGOLD: bySymbol.tGOLD ?? "",
+  // Deliberately blank unless the operator sets it. An unset index means the app reads the chain,
+  // which is the shipping default until one is actually running somewhere.
+  NEXT_PUBLIC_INDEXER_URL: process.env.INDEXER_URL ?? ""
 }
 
 let existingLines = []
@@ -106,14 +109,33 @@ const keeperConfig = {
   poolAddress: pool,
   deployBlock,
   intervalMs: 15000,
-  prices: {}
+  prices: {},
+  // Blank unless the operator points it at one; the keeper then scans the logs itself.
+  indexer: { url: process.env.INDEXER_URL ?? null }
 }
 const keeperPath = join(repoRoot, "keeper", "config.json")
 mkdirSync(dirname(keeperPath), { recursive: true })
 writeFileSync(keeperPath, `${JSON.stringify(keeperConfig, null, 2)}\n`)
+
+// The index carries the desk and the registry as well as the pool, because a wallet's history
+// spans all three and it is the only service that reads more than one contract.
+const indexerConfig = {
+  rpcUrl: chain.rpc,
+  poolAddress: pool,
+  deskAddress: desk ?? null,
+  registryAddress: registry ?? null,
+  deployBlock,
+  intervalMs: 20000,
+  databasePath: "./safix-index.db",
+  port: 8080
+}
+const indexerPath = join(repoRoot, "indexer", "config.json")
+mkdirSync(dirname(indexerPath), { recursive: true })
+writeFileSync(indexerPath, `${JSON.stringify(indexerConfig, null, 2)}\n`)
 
 console.log(`chain ${chain.name} (${chain.id})`)
 console.log(`pool ${pool}`)
 console.log(`wrote ${envPath}`)
 if (preserved.length > 0) console.log(`kept ${preserved.length} existing key(s): ${preserved.join(", ")}`)
 console.log(`wrote ${keeperPath}`)
+console.log(`wrote ${indexerPath}`)

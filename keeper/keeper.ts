@@ -173,8 +173,66 @@ class Keeper {
   // positions
   // ----------------------------------------------------------------------------------------
 
-  /// Discovers every borrower and asset pair that has ever drawn, in chunks the RPC will accept.
+  /// Discovers every borrower and asset pair that has ever drawn.
+  ///
+  /// The index is asked first when one is configured, and the log scan is what happens when it
+  /// does not answer. That order matters both ways round: the scan replays the whole log history
+  /// on every pass, which this chain's 689,000 blocks a day makes steadily more expensive — and
+  /// liquidation is the one thing in the protocol that must not wait on a service the team runs.
+  /// So the index makes the keeper cheaper and is never allowed to make it fragile.
   private async discoverPositions(): Promise<Pair[]> {
+    if (this.config.indexerUrl) {
+      const fromIndex = await this.positionsFromIndex(this.config.indexerUrl)
+      if (fromIndex) return fromIndex
+    }
+    return this.positionsFromLogs()
+  }
+
+  /// Reads open positions from the index. Returns null on anything unexpected — unreachable,
+  /// slow, malformed, stale — so the caller falls back rather than scanning a short list and
+  /// believing it.
+  private async positionsFromIndex(baseUrl: string): Promise<Pair[] | null> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.config.indexerTimeoutMs)
+    try {
+      const status = await fetch(new URL("/status", baseUrl), { signal: controller.signal })
+      if (!status.ok) throw new Error(`status ${status.status}`)
+      const health = (await status.json()) as { cursor: number | null; blocksBehind: number | null }
+
+      // An index that has fallen behind is worse than no index: it answers, so the fallback never
+      // fires, and the positions it omits are exactly the newest ones. The keeper would rather
+      // pay for a log scan than silently stop watching a position drawn five minutes ago.
+      if (health.cursor === null) throw new Error("index has no cursor yet")
+      if (health.blocksBehind !== null && health.blocksBehind > this.config.indexerMaxLagBlocks) {
+        throw new Error(`index is ${health.blocksBehind} blocks behind`)
+      }
+
+      const response = await fetch(new URL("/positions?open=true", baseUrl), { signal: controller.signal })
+      if (!response.ok) throw new Error(`positions ${response.status}`)
+      const body = (await response.json()) as { positions?: { borrower?: string; asset?: string }[] }
+      if (!Array.isArray(body.positions)) throw new Error("positions is not a list")
+
+      const pairs: Pair[] = []
+      for (const entry of body.positions) {
+        // The index is a service the keeper does not control. Its rows are checked here rather
+        // than trusted, because a malformed address would otherwise reach a contract call.
+        if (!entry.borrower || !entry.asset) continue
+        if (!/^0x[0-9a-fA-F]{40}$/.test(entry.borrower) || !/^0x[0-9a-fA-F]{40}$/.test(entry.asset)) continue
+        pairs.push({ borrower: getAddress(entry.borrower), asset: getAddress(entry.asset) })
+      }
+      log.info("positions.from_index", { count: pairs.length, blocksBehind: health.blocksBehind })
+      return pairs
+    } catch (error) {
+      log.warn("positions.index_unavailable", { reason: reason(error), falling_back: "log scan" })
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /// The original discovery: replay every Drawn event from the deploy block, in chunks the RPC
+  /// will accept. Correct, self-sufficient, and slower every day the chain runs.
+  private async positionsFromLogs(): Promise<Pair[]> {
     const latest = await this.publicClient.getBlockNumber()
     const pairs = new Map<string, Pair>()
     const event = poolAbi.find(item => item.type === "event" && item.name === "Drawn")

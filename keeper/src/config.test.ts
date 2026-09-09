@@ -74,3 +74,21 @@ test("a balance is reported as liquidations affordable, not as wei", () => {
   assert.equal(liquidationsAffordable(balance, gasPrice, 150_000n), 3333)
   assert.equal(liquidationsAffordable(0n, gasPrice, 150_000n), 0)
 })
+
+test("the indexer is optional, and absent means the keeper scans the logs itself", () => {
+  const config = loadConfig(write("no-index.json", { ...valid, indexer: { url: null } }), {} as NodeJS.ProcessEnv)
+  assert.equal(config.indexerUrl, null)
+  assert.ok(config.indexerTimeoutMs > 0)
+  assert.ok(config.indexerMaxLagBlocks > 0)
+})
+
+test("the indexer URL can come from the environment, and must be http", () => {
+  assert.equal(
+    loadConfig(write("env-index.json", valid), { INDEXER_URL: "http://index:8080" } as NodeJS.ProcessEnv).indexerUrl,
+    "http://index:8080"
+  )
+  assert.throws(
+    () => loadConfig(write("bad-index.json", { ...valid, indexer: { url: "index:8080" } }), {} as NodeJS.ProcessEnv),
+    /http/
+  )
+})

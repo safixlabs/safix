@@ -12,6 +12,16 @@ export type Config = {
   prices: Record<`0x${string}`, number>
   /// Largest block span a single getLogs call may cover. Public RPCs cap this.
   logChunkBlocks: bigint
+  /// Base URL of the event index, when one is running. The keeper asks it for open positions
+  /// instead of replaying the whole log history every pass. Absent means "scan the logs", which
+  /// is what the keeper did before the index existed and still does when it cannot be reached.
+  indexerUrl: string | null
+  /// How long the index gets to answer before the keeper stops waiting on it. Deliberately
+  /// short: the fallback is a scan that works, so waiting is pure delay to a liquidation.
+  indexerTimeoutMs: number
+  /// How far behind the head the index may be and still be believed. An index that is behind
+  /// omits the newest positions, which are the ones most likely to be undercollateralised.
+  indexerMaxLagBlocks: number
   instanceId: string
   alerts: {
     webhookUrl: string | null
@@ -33,6 +43,8 @@ export type Config = {
 const DEFAULTS = {
   intervalMs: 15_000,
   logChunkBlocks: 50_000n,
+  // At this chain's measured 0.125s blocks, 5,000 blocks is around ten minutes.
+  indexer: { timeoutMs: 3_000, maxLagBlocks: 5_000 },
   alerts: { cooldownMs: 15 * 60_000, stuckScans: 3 },
   // Measured from testnet liquidations, which land between 100k and 120k gas.
   gas: { warnLiquidations: 200, criticalLiquidations: 50, liquidationGas: 150_000n }
@@ -59,6 +71,11 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
   const poolAddress = String(raw.poolAddress ?? "")
   if (!isAddress(poolAddress)) fail("poolAddress is not an address")
   if (/^0x0+$/.test(poolAddress)) fail("poolAddress is the zero address")
+
+  const indexer = (raw.indexer ?? {}) as Record<string, unknown>
+  const indexerRaw = env.INDEXER_URL ?? indexer.url
+  const indexerUrl = indexerRaw === undefined || indexerRaw === null || indexerRaw === "" ? null : String(indexerRaw)
+  if (indexerUrl !== null && !/^https?:\/\//.test(indexerUrl)) fail("indexer.url must be an http(s) URL")
 
   const alerts = (raw.alerts ?? {}) as Record<string, unknown>
   const gas = (raw.gas ?? {}) as Record<string, unknown>
@@ -95,6 +112,9 @@ export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): 
     intervalMs: positive(raw.intervalMs, DEFAULTS.intervalMs, "intervalMs"),
     prices,
     logChunkBlocks: BigInt(positive(raw.logChunkBlocks, Number(DEFAULTS.logChunkBlocks), "logChunkBlocks")),
+    indexerUrl,
+    indexerTimeoutMs: positive(indexer.timeoutMs, DEFAULTS.indexer.timeoutMs, "indexer.timeoutMs"),
+    indexerMaxLagBlocks: positive(indexer.maxLagBlocks, DEFAULTS.indexer.maxLagBlocks, "indexer.maxLagBlocks"),
     // Distinguishes instances in logs and alerts when more than one keeper is running.
     instanceId: String(env.INSTANCE_ID ?? raw.instanceId ?? "keeper"),
     alerts: {

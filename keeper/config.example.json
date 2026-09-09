@@ -14,5 +14,10 @@
     "warnLiquidations": 200,
     "criticalLiquidations": 50,
     "liquidationGas": 150000
+  },
+  "indexer": {
+    "url": null,
+    "timeoutMs": 3000,
+    "maxLagBlocks": 5000
   }
 }

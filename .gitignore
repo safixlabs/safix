@@ -11,3 +11,9 @@ keeper/node_modules/
 keeper/config.json
 monitor/config.json
 monitor/node_modules/
+indexer/node_modules/
+indexer/config.json
+# The index is a cache of the chain, rebuilt by syncing. It is never committed.
+indexer/*.db
+indexer/*.db-wal
+indexer/*.db-shm

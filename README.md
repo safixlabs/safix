@@ -58,7 +58,9 @@ Safix aims to become the private credit and collateral layer for onchain finance
 The protocol core is implemented and tested.
 
 - `contracts/`: Foundry workspace with SafixPool (stability pool, zero-interest credit line, Chainlink feed pricing, scale-aware loss accounting, liquidation incentive, passport gate), PartnershipDesk (profit and loss sharing with auditor-approved settlement), and PassportRegistry. 35 tests including stateful invariants over randomized action sequences.
-- `keeper/`: viem worker that discovers positions from events, pushes prices for feedless assets, and liquidates unhealthy positions automatically.
+- `keeper/`: viem worker that discovers positions, pushes prices for feedless assets, and liquidates unhealthy positions automatically. Reads positions from the index when one is running, and falls back to scanning the logs when it is not.
+- `monitor/`: watches the protocol and alerts. Holds no key.
+- `indexer/`: reads the protocol's events into SQLite and serves them over HTTP — a wallet's history, the pool's size and utilisation over time, and liquidations with the price the pool acted on. Holds no key, and is an enhancement rather than a dependency: the keeper and the app both work without it.
 - `docs/`: the information memorandum (markdown, HTML, PDF).
 
 App: [safix-app.vercel.app](https://safix-app.vercel.app) · Documentation: [safix-docs.vercel.app](https://safix-docs.vercel.app)

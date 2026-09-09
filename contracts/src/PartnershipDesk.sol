@@ -227,10 +227,7 @@ contract PartnershipDesk is Guardable {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Active, "not active");
         require(block.timestamp > partnership.reportingDeadline, "before deadline");
-        // Capital that came back is not a default, however slow the settlement is. Otherwise an
-        // operator who performed loses their share to whoever calls this a second past the
-        // deadline, since settle refuses a defaulted partnership. A partial return still defaults,
-        // so this cannot be used to block a recovery.
+        // Capital that came back is not a default, however slow the settlement is.
         require(partnership.returned < partnership.funded, "capital returned");
         partnership.status = Status.Defaulted;
         emit Defaulted(id, partnership.returned);

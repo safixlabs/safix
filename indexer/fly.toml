@@ -1,0 +1,53 @@
+# Fly.io deployment. Any host that restarts a container on exit and can attach a volume works the
+# same way; this one is written out because it is the shortest path from this repository to an
+# index that stays up.
+#
+#   fly launch --no-deploy
+#   fly volumes create safix_index --size 1
+#   fly deploy
+#
+# There are no secrets to set. The indexer holds no key.
+
+app = "safix-indexer"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LOG_FORMAT = "json"
+  CONFIG = "/app/config.json"
+  DATABASE_PATH = "/data/safix-index.db"
+  INSTANCE_ID = "fly-iad"
+  PORT = "8080"
+
+[[mounts]]
+  source = "safix_index"
+  destination = "/data"
+
+# Unlike the keeper and the monitor, this one listens. The keeper and the app both reach it over
+# HTTP, and both fall back to the chain when it does not answer.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[deploy]
+  # Never two writers on one SQLite file. The old machine stops before the new one starts.
+  strategy = "immediate"
+
+[restart]
+  policy = "always"
