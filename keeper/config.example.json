@@ -3,7 +3,16 @@
   "poolAddress": "0x0000000000000000000000000000000000000000",
   "deployBlock": 0,
   "intervalMs": 15000,
-  "prices": {
-    "0x0000000000000000000000000000000000000000": 100.42
+  "logChunkBlocks": 50000,
+  "instanceId": "keeper-1",
+  "prices": {},
+  "alerts": {
+    "cooldownMs": 900000,
+    "stuckScans": 3
+  },
+  "gas": {
+    "warnLiquidations": 200,
+    "criticalLiquidations": 50,
+    "liquidationGas": 150000
   }
 }

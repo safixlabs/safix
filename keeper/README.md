@@ -1,26 +1,96 @@
 # Safix keeper
 
-Off-chain worker for the Safix pool. Two jobs per pass: push manual prices for assets without a Chainlink feed, and liquidate every position the pool reports as unhealthy. Assets with a feed configured onchain need no price pushes; the keeper's liquidation scan covers them the same way.
+Liquidation is the pool's only defence, so the keeper is production infrastructure rather than a script somebody runs. It does two things each pass: pushes manual prices for assets with no Chainlink feed, and liquidates every position the pool reports as unhealthy.
 
-Positions are discovered from Drawn events, so the keeper needs no registry and no database.
+Positions are discovered from `Drawn` events, so it needs no registry and no database.
+
+**Anyone can run one.** The incentive is real and is described at the bottom.
 
 ## Run
 
 ```
 npm install
-cp config.example.json config.json
-PRIVATE_KEY=0x... npm run scan
-PRIVATE_KEY=0x... npm run watch
+cp config.example.json config.json      # edit poolAddress and deployBlock
+
+PRIVATE_KEY=0x... npm run scan          # one pass
+PRIVATE_KEY=0x... npm run watch         # the loop
+PRIVATE_KEY=0x... npm run drill         # fire one of every alert
+npm test                                # config validation and gas arithmetic
 ```
 
-The key needs gas on the target chain. Price pushes additionally require it to be the pool's owner or its configured price updater; liquidations work from any funded account and earn the liquidation incentive.
+`node scripts/wire-env.mjs testnet` from the repository root writes `config.json` from the recorded deployment, so the address and the start block are never typed by hand.
 
-Config fields: `rpcUrl`, `poolAddress`, optional `deployBlock` (start of the event scan), `intervalMs` for watch mode, and `prices` as checksummed asset address to USD price.
+## Deploying it somewhere
 
-## Failures never cascade
+The keeper is a long-lived worker: it holds a loop, a key, and a little state about which positions have been stuck. It listens on no port. Any host that restarts a container on exit will do.
 
-Liquidation is the pool's only defence, so nothing else in a pass is allowed to cost it its scan.
+A `Dockerfile` and a `fly.toml` are here because that is the shortest path from this repository to a keeper that stays up:
 
-The pool refuses a price that falls outside an asset's configured band or moves further than its deviation limit in one update. That is the oracle guard working, and it says nothing about the other assets, so a rejected push is logged with its reason and the loop carries on. A failure anywhere in the price phase is stepped over and the liquidation scan still runs. Within that scan, one position failing — another keeper got there first, or it stopped being liquidatable between the read and the send — does not stop the rest.
+```
+fly launch --no-deploy
+fly secrets set PRIVATE_KEY=0x... ALERT_WEBHOOK_URL=https://...
+fly deploy
+```
 
-`isLiquidatable` answers false rather than reverting whenever the pool will not act on a price: sequencer down or inside its grace window, stale, out of band, or a single-round jump. One unusable feed skips its own positions and no others, and the keeper is never told to seize collateral on a price nobody could have reacted to.
+`restart.policy = "always"`, and the keeper **exits non-zero on an unhandled error precisely so that fires**. A process that wedges silently is worse than one that dies loudly: the host can restart the second one.
+
+Logs are JSON lines by default, one object per event, for whatever collects them on the host. `LOG_FORMAT=text` gives the human-readable form when running locally.
+
+## Keys and secrets
+
+**`PRIVATE_KEY` is read from the environment only, never from `config.json`.** The config file can be committed, logged or pasted into an issue without carrying a key with it. `ALERT_WEBHOOK_URL` is treated the same way. Both belong in the host's secret store.
+
+**Use a dedicated key.** The keeper key needs nothing but gas: liquidating is permissionless and earns the incentive from the collateral it seizes. It should not be the deployer, the guardian, or a multisig signer. If it leaks, the worst an attacker can do is liquidate positions that were already liquidatable, which is what the keeper is for.
+
+**Gas budget.** A liquidation costs about **150,000 gas**; measured runs on Robinhood Chain testnet land at 152,431. At the observed 0.01 to 0.02 gwei that is roughly **0.0000015 to 0.000003 ETH each**, so:
+
+| Balance | Liquidations it covers, at 0.02 gwei |
+| --- | --- |
+| 0.002 ETH | ~660 |
+| 0.01 ETH | ~3,300 |
+| 0.05 ETH | ~16,600 |
+
+The keeper reports its balance as **the number of liquidations it can still afford**, because that is the unit an on-call engineer can act on. "0.004 ETH" means nothing at 3am; "12 liquidations left" does.
+
+Alert thresholds are set in the same unit: `gas.warnLiquidations` and `gas.criticalLiquidations`. The gap between them is the time somebody has to top the key up. The config refuses to load if critical is not below warn, since the warning would never fire first.
+
+## Alerts
+
+Four things are worth waking someone for, and nothing else. An alert that fires on something nobody acts on trains people to ignore the channel, which costs more than the alert saved.
+
+| Alert | Severity | Fires when |
+| --- | --- | --- |
+| `scan_failed` | warning, critical after 3 in a row | a whole pass failed: the RPC is unreachable, or something threw where nothing should |
+| `tx_reverted` | warning | a liquidation reverted for a reason that is not another keeper getting there first |
+| `position_stuck` | critical | a position has stayed liquidatable across `alerts.stuckScans` consecutive passes |
+| `gas_low` | warning, then critical | the key is running out of gas, with enough warning to top it up |
+
+Delivery is a webhook, in a shape both Slack and Discord accept, so the channel is configuration rather than a code change. The same alert stays quiet for `alerts.cooldownMs` after firing, deduplicated on kind plus subject, so an ongoing incident does not become a flood — a stuck position on one asset does not silence one on another.
+
+**Delivery failures are logged and swallowed.** A keeper that dies because its alerting is down is strictly worse than one that keeps liquidating quietly.
+
+`npm run drill` fires one of every alert so the channel, the routing and the on-call rotation can be tested without waiting for a real incident.
+
+## Running more than one
+
+Safe, and worth doing: two keepers in different regions survive one host going down.
+
+Liquidating is **idempotent by construction**. The pool answers `isLiquidatable` false the moment anybody clears a position, and refuses the call outright if it is already healthy. Two keepers racing therefore cost one wasted transaction, never a double liquidation. Reverts that mean *somebody got there first* — `healthy`, `liquidations paused`, `zero` — are logged and never alerted on.
+
+Positions are attempted in a **shuffled order**, so two keepers scanning the same pool at the same moment mostly work on different ones rather than racing on the same position every pass.
+
+**Give each instance its own key.** Two processes sharing one key will collide on nonces. Set `INSTANCE_ID` per instance so logs and alerts say which one is speaking.
+
+## What it will not do
+
+Liquidations are skipped, not forced, when the pool says the price cannot be trusted: sequencer down or inside its grace window, stale, outside the asset's band, or a single-round jump. `isLiquidatable` returns false in all of those, so **the keeper is never told to seize collateral on a price nobody could have reacted to**. It also stops when the guardian has paused liquidations, and says so in the log rather than retrying into a revert.
+
+A price the pool refuses — outside the asset's band, or moving further than its deviation limit in one update — is logged and stepped over. That is the oracle guard working, and it says nothing about the other assets, so the rest of the pass continues. **A failure anywhere in the price phase never costs the liquidation scan its turn.**
+
+## The incentive, for anyone considering running one
+
+`liquidationIncentiveBps` of the collateral seized goes to whoever sent the transaction, currently **0.5%**. On a 5,000 USDG position that is about 25 USDG of collateral for roughly 0.000003 ETH of gas.
+
+It is permissionless. Liquidating needs no allowlist, no passport and no relationship with the protocol — only a funded key. The pool is better off with several independent keepers than with one, so competition here is the design rather than a tolerated side effect.
+
+Config fields: `rpcUrl`, `poolAddress`, optional `deployBlock` (start of the event scan), `intervalMs`, `logChunkBlocks` (largest span per `getLogs`, for RPCs that cap it), `instanceId`, `prices` as checksummed asset address to USD price, plus the `alerts` and `gas` blocks described above.

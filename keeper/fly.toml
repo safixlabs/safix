@@ -1,0 +1,35 @@
+# Fly.io deployment. Any host with restart-on-failure works the same way; this one is written out
+# because it is the shortest path from this repository to a keeper that stays up.
+#
+#   fly launch --no-deploy
+#   fly secrets set PRIVATE_KEY=0x... ALERT_WEBHOOK_URL=https://...
+#   fly deploy
+#
+# Secrets live in Fly's store and are injected as environment variables. Neither ever appears in
+# the image, the repository, or a log line.
+
+app = "safix-keeper"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LOG_FORMAT = "json"
+  CONFIG = "/app/config.json"
+  INSTANCE_ID = "fly-iad"
+
+# No services block: the keeper listens on nothing. It is a worker.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[processes]
+  keeper = "npx tsx keeper.ts watch"
+
+# Restart on any exit. The keeper exits non-zero on an unhandled error precisely so this fires.
+[deploy]
+  strategy = "immediate"
+
+[restart]
+  policy = "always"

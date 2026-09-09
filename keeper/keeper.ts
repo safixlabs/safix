@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import {
   createPublicClient,
   createWalletClient,
@@ -6,9 +5,14 @@ import {
   getAddress,
   http,
   maxUint256,
-  parseAbi
+  parseAbi,
+  type PublicClient,
+  type WalletClient
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
+import { createAlerter, liquidationsAffordable, type Alerter } from "./src/alerts.ts"
+import { loadConfig, loadPrivateKey, type Config } from "./src/config.ts"
+import { log, reason, setInstance } from "./src/log.ts"
 
 const poolAbi = parseAbi([
   "function setPrice(address asset, uint256 priceUsd1e18)",
@@ -16,171 +20,383 @@ const poolAbi = parseAbi([
   "function isLiquidatable(address borrower, address asset) view returns (bool)",
   "function liquidate(address borrower, address asset, uint256 debtAmount)",
   "function positions(address borrower, address asset) view returns (uint256 collateral, uint256 debt, uint256 totalDrawn)",
+  "function pausedActions() view returns (uint8)",
   "event Drawn(address indexed borrower, address indexed asset, uint256 amount, uint256 fee)"
 ])
 
-type KeeperConfig = {
-  rpcUrl: string
-  poolAddress: `0x${string}`
-  deployBlock?: number
-  intervalMs?: number
-  prices?: Record<string, number>
-}
+const PAUSE_LIQUIDATIONS = 4
 
-const configPath = process.env.CONFIG ?? "./config.json"
-const config: KeeperConfig = JSON.parse(readFileSync(configPath, "utf8"))
+type Pair = { borrower: `0x${string}`; asset: `0x${string}` }
 
-const privateKey = process.env.PRIVATE_KEY
-if (!privateKey) {
-  console.error("PRIVATE_KEY env var is required")
-  process.exit(1)
-}
-
-const account = privateKeyToAccount(privateKey as `0x${string}`)
-const transport = http(config.rpcUrl)
-const publicClient = createPublicClient({ transport })
-const pool = getAddress(config.poolAddress)
+/// Reverts that mean another keeper got there first, or the position stopped being liquidatable
+/// between the read and the send. Expected in normal operation with more than one keeper running,
+/// so they are logged but never alerted on.
+const BENIGN_REVERTS = ["healthy", "liquidations paused", "zero"]
 
 const toPrice1e18 = (value: number) => BigInt(Math.round(value * 1e8)) * 10n ** 10n
 
-const log = (message: string) => {
-  console.log(`[${new Date().toISOString()}] ${message}`)
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/// Randomises the order positions are attempted in. Two keepers scanning the same pool at the
+/// same moment would otherwise race on the same position every pass, wasting one of the two
+/// transactions every time; shuffling means they mostly work on different ones.
+function shuffled<T>(items: T[]): T[] {
+  const copy = [...items]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
 }
 
-/// Pulls the revert reason out of a viem error, which carries it a few lines into a long message.
-/// Without this the log says a call reverted but never says why, which is the only useful part.
-const reason = (error: unknown) => {
-  const text = error instanceof Error ? error.message : String(error)
-  const reverted = text.match(/reverted with the following reason:\s*\n?\s*(.+)/)
-  return (reverted?.[1] ?? text.split("\n")[0]).trim()
-}
+class Keeper {
+  private readonly config: Config
+  private readonly publicClient: PublicClient
+  private readonly alerter: Alerter
+  private readonly account: ReturnType<typeof privateKeyToAccount>
+  private wallet: WalletClient | null = null
 
-async function walletClient() {
-  const chainId = await publicClient.getChainId()
-  const chain = defineChain({
-    id: chainId,
-    name: `chain-${chainId}`,
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [config.rpcUrl] } }
-  })
-  return createWalletClient({ account, chain, transport })
-}
+  /// How many consecutive scans each position has been liquidatable without being cleared.
+  private readonly stuckFor = new Map<string, number>()
 
-async function pushPrices() {
-  const entries = Object.entries(config.prices ?? {})
-  if (entries.length === 0) return
-  const wallet = await walletClient()
-  for (const [assetRaw, price] of entries) {
-    const asset = getAddress(assetRaw)
-    const target = toPrice1e18(price)
-    try {
-      const [current] = await publicClient.readContract({
-        abi: poolAbi,
-        address: pool,
-        functionName: "currentPrice",
-        args: [asset]
+  constructor(config: Config, privateKey: `0x${string}`, alerter: Alerter) {
+    this.config = config
+    this.alerter = alerter
+    this.account = privateKeyToAccount(privateKey)
+    this.publicClient = createPublicClient({ transport: http(config.rpcUrl) })
+  }
+
+  get address() {
+    return this.account.address
+  }
+
+  private async walletClient(): Promise<WalletClient> {
+    if (this.wallet) return this.wallet
+    const chainId = await this.publicClient.getChainId()
+    const chain = defineChain({
+      id: chainId,
+      name: `chain-${chainId}`,
+      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: { default: { http: [this.config.rpcUrl] } }
+    })
+    this.wallet = createWalletClient({ account: this.account, chain, transport: http(this.config.rpcUrl) })
+    return this.wallet
+  }
+
+  /// Foundry's estimate runs short on this Orbit chain because of the L1 data component, and a
+  /// liquidation that dies out of gas is a liquidation that did not happen.
+  private async send(functionName: "liquidate" | "setPrice", args: readonly unknown[]) {
+    const wallet = await this.walletClient()
+    const estimate = await this.publicClient.estimateContractGas({
+      account: this.account,
+      address: this.config.poolAddress,
+      abi: poolAbi,
+      functionName,
+      args: args as never
+    })
+    const hash = await wallet.writeContract({
+      chain: wallet.chain,
+      account: this.account,
+      address: this.config.poolAddress,
+      abi: poolAbi,
+      functionName,
+      args: args as never,
+      gas: (estimate * 3n) / 2n
+    })
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash })
+    return { hash, receipt }
+  }
+
+  // ----------------------------------------------------------------------------------------
+  // gas
+  // ----------------------------------------------------------------------------------------
+
+  /// Reports the key's balance as the number of liquidations it can still afford, and alerts
+  /// while there is still time to top it up rather than once it is already dry.
+  private async checkGas() {
+    const [balance, gasPrice] = await Promise.all([
+      this.publicClient.getBalance({ address: this.account.address }),
+      this.publicClient.getGasPrice()
+    ])
+    const remaining = liquidationsAffordable(balance, gasPrice, this.config.gas.liquidationGas)
+    log.info("gas.balance", { wei: balance, gasPrice, liquidationsRemaining: remaining })
+
+    if (remaining <= this.config.gas.criticalLiquidations) {
+      await this.alerter.fire({
+        kind: "gas_low",
+        severity: "critical",
+        key: this.account.address,
+        message: `keeper key can afford only ${remaining} more liquidations`,
+        fields: { address: this.account.address, balanceWei: balance.toString(), liquidationsRemaining: remaining }
       })
-      if (current === target) continue
-      const hash = await wallet.writeContract({
-        abi: poolAbi,
-        address: pool,
-        functionName: "setPrice",
-        args: [asset, target]
+    } else if (remaining <= this.config.gas.warnLiquidations) {
+      await this.alerter.fire({
+        kind: "gas_low",
+        severity: "warning",
+        key: this.account.address,
+        message: `keeper key is down to ${remaining} liquidations of gas`,
+        fields: { address: this.account.address, balanceWei: balance.toString(), liquidationsRemaining: remaining }
       })
-      await publicClient.waitForTransactionReceipt({ hash })
-      log(`price set ${asset} -> ${price} (${hash})`)
-    } catch (error) {
-      // The pool refuses a price outside the asset's band or one that moves too far in a single
-      // update. That is the guard doing its job, and it says nothing about the other assets, so
-      // the rest of the loop continues.
-      log(`price push failed for ${asset}: ${reason(error)}`)
+    }
+    return remaining
+  }
+
+  // ----------------------------------------------------------------------------------------
+  // prices
+  // ----------------------------------------------------------------------------------------
+
+  private async pushPrices() {
+    const entries = Object.entries(this.config.prices) as [`0x${string}`, number][]
+    if (entries.length === 0) return
+
+    for (const [asset, price] of entries) {
+      const target = toPrice1e18(price)
+      try {
+        const [current] = await this.publicClient.readContract({
+          abi: poolAbi,
+          address: this.config.poolAddress,
+          functionName: "currentPrice",
+          args: [asset]
+        })
+        if (current === target) continue
+        const { hash } = await this.send("setPrice", [asset, target])
+        log.info("price.set", { asset, price, hash })
+      } catch (error) {
+        // The pool refuses a price outside the asset's band or one that moves too far in a single
+        // update. That is the oracle guard working, and it says nothing about the other assets.
+        log.warn("price.rejected", { asset, price, reason: reason(error) })
+      }
     }
   }
-}
 
-async function discoverPositions() {
-  const logs = await publicClient.getLogs({
-    address: pool,
-    event: poolAbi.find(item => item.type === "event" && item.name === "Drawn"),
-    fromBlock: BigInt(config.deployBlock ?? 0),
-    toBlock: "latest"
-  })
-  const pairs = new Map<string, { borrower: `0x${string}`; asset: `0x${string}` }>()
-  for (const entry of logs) {
-    const borrower = entry.args.borrower
-    const asset = entry.args.asset
-    if (!borrower || !asset) continue
-    pairs.set(`${borrower}:${asset}`, { borrower, asset })
+  // ----------------------------------------------------------------------------------------
+  // positions
+  // ----------------------------------------------------------------------------------------
+
+  /// Discovers every borrower and asset pair that has ever drawn, in chunks the RPC will accept.
+  private async discoverPositions(): Promise<Pair[]> {
+    const latest = await this.publicClient.getBlockNumber()
+    const pairs = new Map<string, Pair>()
+    const event = poolAbi.find(item => item.type === "event" && item.name === "Drawn")
+
+    for (let from = this.config.deployBlock; from <= latest; from += this.config.logChunkBlocks) {
+      const to = from + this.config.logChunkBlocks - 1n
+      const logs = await this.publicClient.getLogs({
+        address: this.config.poolAddress,
+        event: event as never,
+        fromBlock: from,
+        toBlock: to > latest ? latest : to
+      })
+      for (const entry of logs) {
+        const borrower = (entry as { args?: Pair }).args?.borrower
+        const asset = (entry as { args?: Pair }).args?.asset
+        if (!borrower || !asset) continue
+        pairs.set(`${borrower}:${asset}`, { borrower, asset })
+      }
+    }
+    return [...pairs.values()]
   }
-  return [...pairs.values()]
-}
 
-async function liquidateUnhealthy() {
-  const pairs = await discoverPositions()
-  log(`scanning ${pairs.length} position(s)`)
-  const wallet = await walletClient()
-  for (const { borrower, asset } of pairs) {
-    try {
-      // isLiquidatable answers false, rather than reverting, whenever the pool will not act on the
-      // price: sequencer down or inside its grace window, stale, out of band, or a single-round
-      // jump. One unusable feed therefore skips its own positions and no others.
-      const liquidatable = await publicClient.readContract({
-        abi: poolAbi,
-        address: pool,
-        functionName: "isLiquidatable",
-        args: [borrower, asset]
-      })
-      if (!liquidatable) continue
-      const [, debt] = await publicClient.readContract({
-        abi: poolAbi,
-        address: pool,
-        functionName: "positions",
-        args: [borrower, asset]
-      })
-      const hash = await wallet.writeContract({
-        abi: poolAbi,
-        address: pool,
-        functionName: "liquidate",
-        args: [borrower, asset, maxUint256]
-      })
-      await publicClient.waitForTransactionReceipt({ hash })
-      log(`liquidated ${borrower} on ${asset}, debt ${debt} (${hash})`)
-    } catch (error) {
-      // Another keeper getting there first, or a position that stopped being liquidatable between
-      // the read and the send, must not cost the remaining positions their scan.
-      log(`liquidation failed for ${borrower} on ${asset}: ${reason(error)}`)
+  /// Liquidating is idempotent by construction: the pool answers isLiquidatable false the moment
+  /// somebody else clears a position, and refuses the call outright if it is already healthy. Two
+  /// keepers racing therefore cost one wasted transaction, never a double liquidation.
+  private async liquidateUnhealthy() {
+    const paused = await this.publicClient.readContract({
+      abi: poolAbi,
+      address: this.config.poolAddress,
+      functionName: "pausedActions"
+    })
+    if ((Number(paused) & PAUSE_LIQUIDATIONS) !== 0) {
+      log.warn("scan.liquidations_paused", { pausedActions: Number(paused) })
+      return
+    }
+
+    const pairs = await this.discoverPositions()
+    log.info("scan.positions", { count: pairs.length })
+
+    const seen = new Set<string>()
+    for (const { borrower, asset } of shuffled(pairs)) {
+      const key = `${borrower}:${asset}`
+      seen.add(key)
+      try {
+        const liquidatable = await this.publicClient.readContract({
+          abi: poolAbi,
+          address: this.config.poolAddress,
+          functionName: "isLiquidatable",
+          args: [borrower, asset]
+        })
+        if (!liquidatable) {
+          this.stuckFor.delete(key)
+          continue
+        }
+
+        const [, debt] = await this.publicClient.readContract({
+          abi: poolAbi,
+          address: this.config.poolAddress,
+          functionName: "positions",
+          args: [borrower, asset]
+        })
+
+        const { hash, receipt } = await this.send("liquidate", [borrower, asset, maxUint256])
+        if (receipt.status === "success") {
+          log.info("liquidated", { borrower, asset, debt, hash, gasUsed: receipt.gasUsed })
+          this.stuckFor.delete(key)
+        } else {
+          this.stuckFor.set(key, (this.stuckFor.get(key) ?? 0) + 1)
+          await this.alerter.fire({
+            kind: "tx_reverted",
+            severity: "warning",
+            key,
+            message: `liquidation transaction reverted onchain for ${borrower} on ${asset}`,
+            fields: { borrower, asset, hash }
+          })
+        }
+      } catch (error) {
+        const why = reason(error)
+        const benign = BENIGN_REVERTS.some(text => why.includes(text))
+        const count = (this.stuckFor.get(key) ?? 0) + 1
+        this.stuckFor.set(key, count)
+
+        if (benign) {
+          log.info("liquidation.skipped", { borrower, asset, reason: why })
+          this.stuckFor.delete(key)
+          continue
+        }
+
+        log.warn("liquidation.failed", { borrower, asset, reason: why, consecutive: count })
+        if (count === 1) {
+          await this.alerter.fire({
+            kind: "tx_reverted",
+            severity: "warning",
+            key,
+            message: `liquidation failed for ${borrower} on ${asset}: ${why}`,
+            fields: { borrower, asset, reason: why }
+          })
+        }
+        if (count >= this.config.alerts.stuckScans) {
+          await this.alerter.fire({
+            kind: "position_stuck",
+            severity: "critical",
+            key,
+            message: `position has been liquidatable for ${count} consecutive scans and is still open`,
+            fields: { borrower, asset, consecutiveScans: count, reason: why }
+          })
+        }
+      }
+    }
+
+    // Positions that no longer exist stop being tracked, so a restarted keeper does not carry a
+    // stale stuck count forever.
+    for (const key of [...this.stuckFor.keys()]) {
+      if (!seen.has(key)) this.stuckFor.delete(key)
     }
   }
-}
 
-async function scanOnce() {
-  // Liquidation is the pool's only defence and must not depend on the price push succeeding.
-  // A pool-side rejection, a feed that will not answer or an RPC hiccup while pushing prices
-  // is logged and stepped over, so the scan below still runs this pass.
-  try {
-    await pushPrices()
-  } catch (error) {
-    log(`price push failed: ${reason(error)}`)
-  }
-  await liquidateUnhealthy()
-}
+  // ----------------------------------------------------------------------------------------
+  // the loop
+  // ----------------------------------------------------------------------------------------
 
-async function watch() {
-  const interval = config.intervalMs ?? 15_000
-  for (;;) {
+  async scanOnce() {
+    await this.checkGas()
+    // Liquidation is the pool's only defence and must not depend on the price push succeeding.
     try {
-      await scanOnce()
+      await this.pushPrices()
     } catch (error) {
-      log(`scan failed: ${reason(error)}`)
+      log.warn("price.phase_failed", { reason: reason(error) })
     }
-    await new Promise(resolve => setTimeout(resolve, interval))
+    await this.liquidateUnhealthy()
+  }
+
+  async watch() {
+    log.info("keeper.start", {
+      pool: this.config.poolAddress,
+      rpc: this.config.rpcUrl,
+      account: this.account.address,
+      intervalMs: this.config.intervalMs
+    })
+    let consecutiveFailures = 0
+    for (;;) {
+      const startedAt = Date.now()
+      try {
+        await this.scanOnce()
+        if (consecutiveFailures > 0) log.info("scan.recovered", { afterFailures: consecutiveFailures })
+        consecutiveFailures = 0
+        log.info("scan.complete", { durationMs: Date.now() - startedAt })
+      } catch (error) {
+        consecutiveFailures += 1
+        const why = reason(error)
+        log.error("scan.failed", { reason: why, consecutive: consecutiveFailures })
+        await this.alerter.fire({
+          kind: "scan_failed",
+          severity: consecutiveFailures >= 3 ? "critical" : "warning",
+          key: "scan",
+          message: `scan failed ${consecutiveFailures} time(s) in a row: ${why}`,
+          fields: { reason: why, consecutive: consecutiveFailures }
+        })
+      }
+      // Back off when the chain or the RPC is unhappy, so a broken endpoint is not hammered.
+      const backoff = Math.min(consecutiveFailures, 5)
+      await sleep(this.config.intervalMs * (backoff > 0 ? 2 ** backoff : 1))
+    }
+  }
+
+  /// Sends one of each alert so the channel, the routing and the on-call rotation can be tested
+  /// without waiting for a real incident.
+  async drill() {
+    log.info("drill.start", { account: this.account.address })
+    const alerts = [
+      { kind: "scan_failed", severity: "warning", key: "drill", message: "DRILL: scan failure" },
+      { kind: "tx_reverted", severity: "warning", key: "drill", message: "DRILL: liquidation reverted" },
+      { kind: "position_stuck", severity: "critical", key: "drill", message: "DRILL: position stuck across scans" },
+      { kind: "gas_low", severity: "critical", key: "drill", message: "DRILL: keeper key running out of gas" }
+    ] as const
+    for (const alert of alerts) {
+      await this.alerter.fire({ ...alert, fields: { drill: true } })
+    }
+    log.info("drill.complete", { fired: this.alerter.sent.length })
+    return this.alerter.sent.length
   }
 }
+
+// --- entry point ---------------------------------------------------------------------------
 
 const mode = process.argv[2] ?? "scan"
+const config = loadConfig(process.env.CONFIG ?? "./config.json")
+setInstance(config.instanceId)
+
+const alerter = createAlerter(config.alerts.webhookUrl, config.alerts.cooldownMs, config.instanceId)
+const keeper = new Keeper(config, loadPrivateKey(), alerter)
+
+if (!config.alerts.webhookUrl) {
+  log.warn("alerts.no_webhook", { hint: "set ALERT_WEBHOOK_URL; alerts will only reach the log" })
+}
+
+// A crash must restart, not exit quietly and leave the pool unwatched. The host restarts on a
+// non-zero exit; these handlers make sure one happens rather than the process lingering wedged.
+process.on("unhandledRejection", error => {
+  log.error("keeper.unhandled_rejection", { reason: reason(error) })
+  process.exit(1)
+})
+process.on("uncaughtException", error => {
+  log.error("keeper.uncaught_exception", { reason: reason(error) })
+  process.exit(1)
+})
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    log.info("keeper.stopping", { signal })
+    process.exit(0)
+  })
+}
+
 if (mode === "watch") {
-  log(`keeper watching ${pool} via ${config.rpcUrl}`)
-  watch()
+  await keeper.watch()
+} else if (mode === "drill") {
+  const fired = await keeper.drill()
+  if (fired === 0) {
+    log.error("drill.nothing_fired", {})
+    process.exit(1)
+  }
 } else {
-  scanOnce().then(() => log("scan complete"))
+  await keeper.scanOnce()
+  log.info("scan.complete", {})
 }

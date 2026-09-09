@@ -4,14 +4,16 @@
   "type": "module",
   "scripts": {
     "scan": "tsx keeper.ts scan",
-    "watch": "tsx keeper.ts watch"
+    "watch": "tsx keeper.ts watch",
+    "drill": "tsx keeper.ts drill",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "viem": "^2.38.0"
+    "viem": "^2.38.0",
+    "tsx": "^4.20.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }
 }

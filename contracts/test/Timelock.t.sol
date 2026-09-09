@@ -352,7 +352,6 @@ contract TimelockTest is Test {
         vm.expectRevert(bytes("not timelock"));
         desk.setTimelock(multisig);
 
-        // The parameters stay out of reach, which is the point of the two reverts above.
         vm.prank(multisig);
         vm.expectRevert(bytes("not timelock"));
         pool.configureAsset(address(tbill), 9900, 9901, 100e18);
@@ -361,7 +360,6 @@ contract TimelockTest is Test {
         vm.expectRevert(bytes("not timelock"));
         desk.setAuditor(multisig);
 
-        // Moving the gate is possible, but only through the gate, so it takes the full delay.
         SafixTimelock replacement = new SafixTimelock(multisig, DELAY);
         _queueAndRun(address(pool), abi.encodeCall(SafixPool.setTimelock, (address(replacement))));
         assertEq(pool.timelock(), address(replacement));
