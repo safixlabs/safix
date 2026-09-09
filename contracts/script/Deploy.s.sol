@@ -30,6 +30,20 @@ contract Deploy is Script {
         pool.setPriceGuard(address(bnvda), 1 hours, 2_000, 10e18, 1_000e18);
         pool.setPriceGuard(address(tgold), 1 days, 1_500, 1_000e18, 10_000e18);
 
+        // Caps sized from docs/risk-parameters.md against the 250,000 seeded below. Debt caps are
+        // the class share of pool size: A 40%, C 15%, D 15%. Each collateral cap is the collateral
+        // that debt needs at the asset's own max LTV and price, plus a quarter for the position
+        // that sits over-collateralised. No asset is enabled and left uncapped.
+        //   tBILL  100,000 / 0.80 / 100.42  = 1,244.8, +25% -> 1,556
+        //   bNVDA   37,500 / 0.55 / 172.35  =   395.6, +25% ->   495
+        //   tGOLD   37,500 / 0.65 / 3392.80 =    17.0, +25% ->    22
+        pool.setAssetCaps(address(tbill), 100_000e6, 1_556e18);
+        pool.setAssetCaps(address(bnvda), 37_500e6, 495e18);
+        pool.setAssetCaps(address(tgold), 37_500e6, 22e18);
+
+        // Global ceiling 50% of pool size, minimum position 500 stable, liquidity buffer 10%.
+        pool.setRiskLimits(125_000e6, 500e6, 25_000e6);
+
         // The L2 sequencer uptime feed is deliberately left unset: Chainlink has not published one
         // for Robinhood Chain. setSequencerUptimeFeed wires it the day one exists, with no redeploy.
 

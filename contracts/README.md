@@ -5,6 +5,7 @@ Foundry workspace for the Safix protocol on Robinhood Chain.
 ## Contracts
 
 - `SafixPool.sol`: the core. USDC-denominated stability pool with Liquity-style product-sum accounting (scale-aware, so precision survives arbitrarily heavy liquidation sequences), per-asset collateral configuration, zero-interest draws with a one-time origination fee added to debt, a redemption fee at position close, partial liquidation with a keeper incentive carved from seized collateral, Chainlink AggregatorV3 feeds per asset with manual price fallback, the oracle safety layer described below, and an optional passport gate on draws.
+- `Guardable.sol`: the guardian role and the pause bitmask, inherited by the pool and the desk. Pausing is a guardian or owner action with no timelock; unpausing is the owner's alone.
 - `PartnershipDesk.sol`: the profit and loss sharing track. Owner-created partnerships, pro-rata funding, capital to the operator on activation, onchain return reports, optional auditor-approved settlement, profit split at the agreed ratio, genuine losses on the capital.
 - `PassportRegistry.sol`: attester-written five-check bitmask with optional expiry and revocation; `isEligible` is the single question integrated platforms ask.
 
@@ -39,13 +40,66 @@ Every field is off when zero, so an asset with no guard behaves exactly as it di
 
 `isLiquidatable` returns false rather than reverting whenever the price is unusable, so a keeper scanning many positions is not knocked over by one bad feed, and no keeper is ever told to seize collateral on a number nobody could have reacted to.
 
+## Risk caps
+
+No asset can absorb the whole pool. `setAssetCaps(asset, debtCap, collateralCap)` bounds one asset; `setRiskLimits(globalDebtCeiling, minPositionDebt, minLiquidityBuffer)` bounds the pool. Every limit is off at zero, so an unconfigured pool behaves as it did before.
+
+| Limit | Refuses |
+| --- | --- |
+| `debtCap` | a draw that would take stable owed against this asset past the cap. Reverts `asset cap`. |
+| `collateralCap` | a lock that would take the pool's holding of this asset past the cap. Reverts `collateral cap`. |
+| `globalDebtCeiling` | a draw that would take total debt past the ceiling. Reverts `global cap`. |
+| `minPositionDebt` | a draw that opens a position too small to be worth liquidating, and a repayment that would leave one. Reverts `position too small`. |
+| `minLiquidityBuffer` | a draw that would take available liquidity below the floor. Reverts `illiquid`. |
+
+Caps count debt including the origination fee, because that is what the pool is owed. The liquidity buffer counts the fee too: available liquidity falls by the fee as well as the amount, since the fee is set aside as protocol revenue rather than left lendable.
+
+`assetDebt` and `assetCollateral` are accumulators, and `assetDebtHeadroom`, `assetCollateralHeadroom`, `globalDebtHeadroom` and `drawableLiquidity` report the remaining room. An interface can show how much is left before a signature rather than discovering the boundary through a revert; an uncapped limit reports the maximum, so a minimum across limits needs no special-casing.
+
+Two behaviours worth knowing. A cap may be lowered below current usage: that stops further growth without forcing open positions to unwind, which would be a liquidation by another name. And a partial liquidation that would leave less than `minPositionDebt` behind takes the whole position instead, so the floor cannot be walked around by liquidating around it.
+
+How each number is chosen, per asset class, and who may change it: [docs/risk-parameters.md](../docs/risk-parameters.md).
+
+## Emergency pause
+
+A guardian, separate from the owner, can stop new risk-taking in the block it decides to. Only the owner can start it again. The asymmetry is the point: stopping is urgent and one signer's judgement is enough, restarting is a considered decision and belongs to the owner, which becomes the multisig. A guardian that could also unpause would be a second key with the owner's authority.
+
+There is no timelock on pausing. A brake that waits is not a brake.
+
+**Actions are bits, so one transaction can stop several.**
+
+| Contract | Constant | Value | Stops |
+| --- | --- | --- | --- |
+| `SafixPool` | `PAUSE_DRAWS` | 1 | `draw` |
+| `SafixPool` | `PAUSE_DEPOSITS` | 2 | `deposit` |
+| `SafixPool` | `PAUSE_LIQUIDATIONS` | 4 | `liquidate` |
+| `SafixPool` | `PAUSE_ALL` | 7 | all three, in one transaction |
+| `PartnershipDesk` | `PAUSE_FUNDING` | 1 | `fund` |
+
+`pool.pause(PAUSE_ALL)` is the single call that stops every way new risk enters the pool. Each bit is also independently pausable for the narrower cases — a compromised oracle wants liquidations stopped and nothing else.
+
+**Nothing that lets a user out is pausable.** There is no switch for these, in any state:
+
+`repay` · `closePosition` · `withdrawCollateral` · `claimGains` · `withdraw` · `lockCollateral` · on the desk, `reportReturn`, `claim` and `claimOperator`
+
+`lockCollateral` is on that list because adding collateral cannot make a position worse; refusing it during an incident would only stop a borrower from rescuing themselves.
+
+**Every pause and unpause is announced onchain.** `Paused(actions, pausedAfter, by)` and `Unpaused(...)` record which bits changed, the resulting mask, and who did it. `GuardianSet(guardian)` records appointments.
+
+**The reason does not go onchain.** An incident is a paragraph, not a bitmask, and putting a half-formed diagnosis in calldata during an emergency is how a wrong one becomes permanent. What the chain records is that the brake was pulled, when, and by whom. The reason belongs in the incident log, written alongside it:
+
+1. Guardian pulls the brake. Nothing waits on writing anything down.
+2. Within the hour, an entry in the incident log: the transaction hash of the pause, the mask, what was observed, and who is handling it.
+3. The entry is updated as the picture changes; the initial one is never rewritten.
+4. Unpausing is an owner transaction and needs the log entry closed first, with what was found and what changed.
+
 ## Tests
 
 ```
 forge test
 ```
 
-58 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
+100 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a risk caps suite that tests every cap boundary from both sides and holds the accumulators to the positions they summarise; an emergency pause suite that drives every user-facing entry point through all eight combinations of the pool's pause bits and holds the role split and the exits open in each; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
 
 ## Deploy
 

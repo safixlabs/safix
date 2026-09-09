@@ -16,11 +16,18 @@ contract SafixPool is Guardable {
     uint8 public constant PAUSE_LIQUIDATIONS = 4;
     uint8 public constant PAUSE_ALL = 7;
 
+    /// @param debtCap       most stable that may be owed against this asset at once, 0 for uncapped
+    /// @param collateralCap most of this asset the pool will hold as collateral, 0 for uncapped
+    ///
+    /// Both caps are appended after the original four fields, so a reader built against the older
+    /// shape still decodes the first four correctly.
     struct AssetConfig {
         bool enabled;
         uint16 maxLtvBps;
         uint16 liqThresholdBps;
         uint256 priceUsd1e18;
+        uint256 debtCap;
+        uint256 collateralCap;
     }
 
     /// @notice Per-asset limits a price has to satisfy before the pool will act on it. Each field is
@@ -95,6 +102,27 @@ contract SafixPool is Guardable {
     mapping(address => AssetConfig) public assetConfig;
     mapping(address => mapping(address => Position)) public positions;
 
+    /// @notice Stable currently owed against each asset, and how much of each asset the pool holds
+    ///         as collateral. Accumulators rather than views: summing over every borrower would not
+    ///         survive the book growing, and the interface needs to show remaining room cheaply.
+    mapping(address => uint256) public assetDebt;
+    mapping(address => uint256) public assetCollateral;
+
+    /// @notice Stable owed across every asset, kept against `globalDebtCeiling`.
+    uint256 public totalDebt;
+
+    /// @notice Most the pool will lend in total, 0 for uncapped.
+    uint256 public globalDebtCeiling;
+
+    /// @notice Smallest debt a position may carry while open. A position below this is worth less
+    ///         than the gas to liquidate it, so it would sit there unliquidatable; positions are
+    ///         held at or above it, or closed outright. 0 disables the floor.
+    uint256 public minPositionDebt;
+
+    /// @notice Liquidity a draw must leave behind, so the pool cannot be drained to the point where
+    ///         providers cannot withdraw and liquidations cannot be absorbed. 0 disables the floor.
+    uint256 public minLiquidityBuffer;
+
     uint256 public totalDeposits;
     uint256 public productP = P_PRECISION;
     uint256 public currentScale;
@@ -129,6 +157,8 @@ contract SafixPool is Guardable {
     event LiquidationIncentiveSet(uint16 bps);
     event FeesSet(uint16 originationBps, uint16 redemptionBps);
     event SequencerUptimeFeedSet(address indexed feed, uint256 gracePeriod);
+    event AssetCapsSet(address indexed asset, uint256 debtCap, uint256 collateralCap);
+    event RiskLimitsSet(uint256 globalDebtCeiling, uint256 minPositionDebt, uint256 minLiquidityBuffer);
     event PriceGuardSet(
         address indexed asset,
         uint64 maxPriceAge,
@@ -238,11 +268,71 @@ contract SafixPool is Guardable {
         uint256 priceUsd1e18
     ) external onlyOwner {
         require(maxLtvBps < liqThresholdBps && liqThresholdBps <= BPS, "bad config");
-        if (!assetConfig[asset].enabled) assetList.push(asset);
-        assetConfig[asset] =
-            AssetConfig({enabled: true, maxLtvBps: maxLtvBps, liqThresholdBps: liqThresholdBps, priceUsd1e18: priceUsd1e18});
+        AssetConfig storage config = assetConfig[asset];
+        if (!config.enabled) assetList.push(asset);
+        // Fields are assigned rather than the struct replaced, so reconfiguring an asset's LTV does
+        // not silently drop the caps that bound it.
+        config.enabled = true;
+        config.maxLtvBps = maxLtvBps;
+        config.liqThresholdBps = liqThresholdBps;
+        config.priceUsd1e18 = priceUsd1e18;
         priceUpdatedAt[asset] = block.timestamp;
         emit AssetConfigured(asset, maxLtvBps, liqThresholdBps);
+    }
+
+    /// @notice Bounds how much of the pool one asset may account for. Set independently of
+    ///         `configureAsset` so tuning an LTV never disturbs a cap, or the other way round.
+    ///         Either cap may be lowered below current usage: that stops further growth without
+    ///         forcing anything open to unwind, which would be a liquidation by another name.
+    function setAssetCaps(address asset, uint256 debtCap, uint256 collateralCap) external onlyOwner {
+        require(assetConfig[asset].enabled, "asset off");
+        assetConfig[asset].debtCap = debtCap;
+        assetConfig[asset].collateralCap = collateralCap;
+        emit AssetCapsSet(asset, debtCap, collateralCap);
+    }
+
+    /// @notice The pool-wide limits: how much may be owed in total, how small a position may be,
+    ///         and how much liquidity a draw has to leave behind. Zero disables any of them.
+    function setRiskLimits(uint256 globalDebtCeiling_, uint256 minPositionDebt_, uint256 minLiquidityBuffer_)
+        external
+        onlyOwner
+    {
+        globalDebtCeiling = globalDebtCeiling_;
+        minPositionDebt = minPositionDebt_;
+        minLiquidityBuffer = minLiquidityBuffer_;
+        emit RiskLimitsSet(globalDebtCeiling_, minPositionDebt_, minLiquidityBuffer_);
+    }
+
+    /// @notice How much more may be drawn against this asset before its own cap binds. Uncapped
+    ///         assets report the maximum, so the interface can take a minimum across limits without
+    ///         special-casing. This is the number a borrow screen needs before a signature, rather
+    ///         than discovering the boundary through a revert.
+    function assetDebtHeadroom(address asset) public view returns (uint256) {
+        uint256 cap = assetConfig[asset].debtCap;
+        if (cap == 0) return type(uint256).max;
+        uint256 used = assetDebt[asset];
+        return used >= cap ? 0 : cap - used;
+    }
+
+    /// @notice How much more of this asset the pool will accept as collateral.
+    function assetCollateralHeadroom(address asset) public view returns (uint256) {
+        uint256 cap = assetConfig[asset].collateralCap;
+        if (cap == 0) return type(uint256).max;
+        uint256 used = assetCollateral[asset];
+        return used >= cap ? 0 : cap - used;
+    }
+
+    /// @notice How much more the pool will lend in total before the global ceiling binds.
+    function globalDebtHeadroom() public view returns (uint256) {
+        if (globalDebtCeiling == 0) return type(uint256).max;
+        return totalDebt >= globalDebtCeiling ? 0 : globalDebtCeiling - totalDebt;
+    }
+
+    /// @notice Liquidity a draw may take before it would breach the buffer.
+    function drawableLiquidity() public view returns (uint256) {
+        uint256 available = availableLiquidity();
+        if (minLiquidityBuffer == 0) return available;
+        return available <= minLiquidityBuffer ? 0 : available - minLiquidityBuffer;
     }
 
     /// @notice Manual price for an asset without a feed. The same sanity bounds a feed answer has to
@@ -482,7 +572,9 @@ contract SafixPool is Guardable {
     function lockCollateral(address asset, uint256 amount) external nonReentrant {
         require(assetConfig[asset].enabled, "asset off");
         require(amount > 0, "zero");
+        require(amount <= assetCollateralHeadroom(asset), "collateral cap");
         positions[msg.sender][asset].collateral += amount;
+        assetCollateral[asset] += amount;
         require(IERC20(asset).transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit CollateralLocked(msg.sender, asset, amount);
     }
@@ -505,6 +597,7 @@ contract SafixPool is Guardable {
             );
         }
         position.collateral = remaining;
+        assetCollateral[asset] -= amount;
         require(IERC20(asset).transfer(msg.sender, amount), "transfer failed");
         emit CollateralWithdrawn(msg.sender, asset, amount);
     }
@@ -523,9 +616,21 @@ contract SafixPool is Guardable {
         uint256 newDebt = position.debt + amount + fee;
         uint256 value = (position.collateral * price1e18) / 1e30;
         require((value * config.maxLtvBps) / BPS >= newDebt, "exceeds ltv");
-        require(amount <= availableLiquidity(), "illiquid");
+
+        // Caps are measured against debt, fee included, because that is what the pool is owed.
+        uint256 debtAdded = amount + fee;
+        require(debtAdded <= assetDebtHeadroom(asset), "asset cap");
+        require(debtAdded <= globalDebtHeadroom(), "global cap");
+        require(newDebt >= minPositionDebt, "position too small");
+        // Available liquidity falls by the fee as well as the amount, because the fee is set aside
+        // as protocol revenue rather than left lendable. Checking the amount alone would let a draw
+        // dip the pool under its own buffer by exactly the fee.
+        require(debtAdded <= drawableLiquidity(), "illiquid");
+
         position.debt = newDebt;
         position.totalDrawn += amount;
+        assetDebt[asset] += debtAdded;
+        totalDebt += debtAdded;
         protocolFees += fee;
         require(stable.transfer(msg.sender, amount), "transfer failed");
         emit Drawn(msg.sender, asset, amount, fee);
@@ -534,7 +639,13 @@ contract SafixPool is Guardable {
     function repay(address asset, uint256 amount) external nonReentrant {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.debt, "bad amount");
-        position.debt -= amount;
+        uint256 remaining = position.debt - amount;
+        // Repaying to nothing is always allowed; repaying to dust is not, or the position would be
+        // left too small to be worth liquidating. Repaying in full is one call away either way.
+        require(remaining == 0 || remaining >= minPositionDebt, "position too small");
+        position.debt = remaining;
+        assetDebt[asset] -= amount;
+        totalDebt -= amount;
         require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
         emit Repaid(msg.sender, asset, amount);
     }
@@ -545,6 +656,9 @@ contract SafixPool is Guardable {
         uint256 redemptionFee = (position.totalDrawn * redemptionFeeBps) / BPS;
         uint256 owed = position.debt + redemptionFee;
         uint256 collateral = position.collateral;
+        assetDebt[asset] -= position.debt;
+        totalDebt -= position.debt;
+        assetCollateral[asset] -= collateral;
         position.collateral = 0;
         position.debt = 0;
         position.totalDrawn = 0;
@@ -579,6 +693,10 @@ contract SafixPool is Guardable {
         require(isLiquidatable(borrower, asset), "healthy");
         Position storage position = positions[borrower][asset];
         uint256 offset = debtAmount >= position.debt ? position.debt : debtAmount;
+        // A partial liquidation that would leave dust takes the whole position instead. Otherwise
+        // the remainder sits there worth less than the gas to clear it, which is exactly the
+        // unliquidatable position the minimum is there to prevent.
+        if (position.debt - offset < minPositionDebt) offset = position.debt;
         require(offset > 0, "zero");
         require(totalDeposits > offset, "pool too small");
         uint256 seized = (position.collateral * offset) / position.debt;
@@ -591,6 +709,9 @@ contract SafixPool is Guardable {
         position.debt -= offset;
         position.collateral -= seized;
         position.totalDrawn -= drawnOffset;
+        assetDebt[asset] -= offset;
+        totalDebt -= offset;
+        assetCollateral[asset] -= seized;
         sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
         uint256 newP = (productP * (totalDeposits - offset)) / totalDeposits;
         while (newP < P_MIN) {

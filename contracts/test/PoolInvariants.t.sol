@@ -64,8 +64,9 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         uint256 capacity = (value * 8000) / 10_000;
         uint256 headroom = capacity > debt ? capacity - debt : 0;
         uint256 maxDraw = (headroom * 10_000) / (10_000 + pool.originationFeeBps());
-        uint256 available = pool.availableLiquidity();
-        if (maxDraw > available) maxDraw = available;
+        // Liquidity bounds the debt a draw creates, fee included, not the amount handed over.
+        uint256 byLiquidity = (pool.drawableLiquidity() * 10_000) / (10_000 + pool.originationFeeBps());
+        if (maxDraw > byLiquidity) maxDraw = byLiquidity;
         if (maxDraw >= 1e6) {
             pool.draw(address(tbill), bound(drawAmount, 1e6, maxDraw));
         }
@@ -178,6 +179,16 @@ contract PoolInvariantsTest is Test {
             gains += pool.gainOf(handler.lpAt(i), address(tbill));
         }
         assertGe(tbill.balanceOf(address(pool)) + 2, _sumCollateral() + gains);
+    }
+
+    /// @dev The caps are only as good as the accumulators they read, so those have to match the
+    ///      positions they summarise on every reachable state.
+    function invariant_accumulatorsMatchPositions() public view {
+        assertEq(pool.assetDebt(address(tbill)), _sumDebt(), "assetDebt drifted from the positions");
+        assertEq(pool.totalDebt(), _sumDebt(), "totalDebt drifted from the positions");
+        assertEq(
+            pool.assetCollateral(address(tbill)), _sumCollateral(), "assetCollateral drifted from the positions"
+        );
     }
 
     function invariant_productStaysInBand() public view {

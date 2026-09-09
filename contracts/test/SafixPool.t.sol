@@ -147,7 +147,7 @@ contract SafixPoolTest is Test {
         pool.setPriceUpdater(keeper);
         vm.prank(keeper);
         pool.setPrice(address(tbill), 99e18);
-        (,,, uint256 price) = pool.assetConfig(address(tbill));
+        (,,, uint256 price,,) = pool.assetConfig(address(tbill));
         assertEq(price, 99e18);
 
         vm.prank(borrower);

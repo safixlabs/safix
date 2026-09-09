@@ -103,7 +103,7 @@ contract Smoke is Script {
 
         uint16 maxLtvBps;
         bool enabled;
-        (enabled, maxLtvBps, plan.liqThresholdBps,) = pool.assetConfig(assetAddress);
+        (enabled, maxLtvBps, plan.liqThresholdBps,,,) = pool.assetConfig(assetAddress);
         require(enabled, "asset not configured on pool");
 
         (plan.startingPrice,) = pool.currentPrice(assetAddress);
