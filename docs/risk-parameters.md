@@ -122,15 +122,38 @@ An asset is never enabled and left uncapped. `configureAsset` followed by nothin
 
 ## Who signs off
 
-| Change | Authority |
-| --- | --- |
-| Any parameter in the table above | Owner, which is the multisig, through the timelock |
-| Pausing | Guardian alone, immediately, no timelock |
-| Unpausing | Owner |
-| Onboarding a new asset | Owner, with the onboarding record above completed first |
-| Lowering a cap in an incident | Owner; the guardian's tool is the pause, not the caps |
+| Change | Authority | Waits |
+| --- | --- | --- |
+| `maxLtvBps`, `liqThresholdBps`, `debtCap`, `collateralCap` | multisig, through the timelock | yes |
+| `globalDebtCeiling`, `minPositionDebt`, `minLiquidityBuffer` | multisig, through the timelock | yes |
+| Price guards, price feed swaps | multisig, through the timelock | yes |
+| Fees, `liquidationIncentiveBps`, `reserveFeeShareBps` | multisig, through the timelock | yes |
+| The desk's auditor | multisig, through the timelock | yes |
+| Pausing | guardian alone | **no** |
+| Unpausing | multisig, directly | **no** |
+| Guardian appointment, price updater, passport registry | multisig, directly | no |
+| Collecting fees, withdrawing from the reserve | multisig, directly | no |
+| Posting a price | price updater, every heartbeat | no |
+| Onboarding a new asset | multisig, through the timelock, with the onboarding record above completed first | yes |
 
-Until the multisig lands, the owner is a single key and this table describes intent rather than enforcement.
+The split is between what changes user risk and what does not. An LTV binds a position that already exists, so it waits. A pause removes risk and cannot wait — a brake that waits is not a brake. Unpausing is immediate too: an incident is not the moment to add two days, and the multisig has already had to agree.
+
+This is enforced onchain, not by convention. Risk parameters carry `onlyTimelock`, so the multisig cannot reach them directly even though it owns the contracts.
+
+### The multisig and the timelock
+
+| | Testnet |
+| --- | --- |
+| Safe | [`0x9c41ef802d8435ceed762173a167f0696df319e9`](https://explorer.testnet.chain.robinhood.com/address/0x9c41ef802d8435ceed762173a167f0696df319e9), v1.4.1 |
+| Signers | `0x0dD1f46b…`, `0x2FbD3F25…`, `0x6Fdf7e5b…` |
+| Threshold | **2 of 3** |
+| Timelock delay | **48 hours** |
+
+Two of three is the smallest threshold where no single compromised key moves anything and no single lost key locks everything. The mainnet signer set is a separate decision, made with the mainnet launch, and belongs to people rather than to keys generated for a testnet.
+
+The delay has a floor of **24 hours in the contract**, which the admin cannot cross: `setDelay` runs only through the timelock itself, so shortening the delay is announced as far in advance as any other change. A queued operation expires after a **14-day grace period**, so a change nobody remembers cannot be executed a year later by whoever finds it.
+
+Cancelling is immediate. Stopping a change is never the thing that needs slowing down.
 
 **A change needs, before it is proposed:** the parameter, its current and proposed value, which class rule it follows or why it departs from one, what changed to prompt it, and what it costs if it is wrong. A proposal that cannot answer the last question is not ready.
 

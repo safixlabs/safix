@@ -437,9 +437,9 @@ contract RiskCapsTest is Test {
 
     function testOnlyOwnerSetsCapsAndLimits() public {
         vm.startPrank(outsider);
-        vm.expectRevert(bytes("not owner"));
+        vm.expectRevert(bytes("not timelock"));
         pool.setAssetCaps(address(tbill), 1, 1);
-        vm.expectRevert(bytes("not owner"));
+        vm.expectRevert(bytes("not timelock"));
         pool.setRiskLimits(1, 1, 1);
         vm.stopPrank();
     }

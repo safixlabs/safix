@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {Script, console} from "forge-std/Script.sol";
 import {SafixPool} from "../src/SafixPool.sol";
+import {SafixTimelock} from "../src/SafixTimelock.sol";
 import {PartnershipDesk} from "../src/PartnershipDesk.sol";
 import {PassportRegistry} from "../src/PassportRegistry.sol";
 import {MockERC20} from "../src/MockERC20.sol";
@@ -77,6 +78,29 @@ contract Deploy is Script {
         // time to build it. 2% of pool size, per docs/risk-parameters.md.
         pool.fundReserve(5_000e6);
 
+        // Handover, last, because everything above needs the owner to still hold the keys. Wire the
+        // delay first so risk parameters are already behind it when ownership moves, then hand the
+        // three contracts to the multisig. With no MULTISIG given the deployer keeps them, which is
+        // the state a throwaway test deployment wants.
+        address multisig = vm.envOr("MULTISIG", address(0));
+        uint256 timelockDelay = vm.envOr("TIMELOCK_DELAY", uint256(0));
+        // A throwaway deployment may keep the deployer. Mainnet may not: a stale environment file
+        // there would leave every privileged surface on one key with nothing to say so.
+        if (block.chainid == 4663) {
+            require(multisig != address(0), "MULTISIG required on mainnet");
+        }
+        address timelockAddress;
+        if (multisig != address(0)) {
+            require(timelockDelay > 0, "TIMELOCK_DELAY required alongside MULTISIG");
+            SafixTimelock timelock = new SafixTimelock(multisig, timelockDelay);
+            timelockAddress = address(timelock);
+            pool.setTimelock(timelockAddress);
+            desk.setTimelock(timelockAddress);
+            pool.setOwner(multisig);
+            registry.setOwner(multisig);
+            desk.setOwner(multisig);
+        }
+
         vm.stopBroadcast();
 
         console.log("usdc", address(usdc));
@@ -87,5 +111,7 @@ contract Deploy is Script {
         console.log("registry", address(registry));
         console.log("desk", address(desk));
         console.log("guardian", guardian);
+        console.log("multisig", multisig);
+        console.log("timelock", timelockAddress);
     }
 }

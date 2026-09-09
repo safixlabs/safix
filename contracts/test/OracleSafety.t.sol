@@ -394,7 +394,8 @@ contract OracleSafetyTest is Test {
         vm.startPrank(keeper);
         vm.expectRevert(bytes("not owner"));
         pool.setSequencerUptimeFeed(address(sequencer), GRACE);
-        vm.expectRevert(bytes("not owner"));
+        // Price guards are a risk parameter, so they answer to the timelock rather than the owner.
+        vm.expectRevert(bytes("not timelock"));
         pool.setPriceGuard(address(bnvda), 1 hours, 500, 1e18, 2e18);
         vm.stopPrank();
     }

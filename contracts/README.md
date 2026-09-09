@@ -5,6 +5,7 @@ Foundry workspace for the Safix protocol on Robinhood Chain.
 ## Contracts
 
 - `SafixPool.sol`: the core. USDC-denominated stability pool with Liquity-style product-sum accounting (scale-aware, so precision survives arbitrarily heavy liquidation sequences), per-asset collateral configuration, zero-interest draws with a one-time origination fee added to debt, a redemption fee at position close, partial liquidation with a keeper incentive carved from seized collateral, Chainlink AggregatorV3 feeds per asset with manual price fallback, the oracle safety layer described below, and an optional passport gate on draws.
+- `SafixTimelock.sol`: the delay every risk parameter passes through. Queue, wait, execute; cancel immediately. Its own delay and admin are behind the delay too.
 - `Guardable.sol`: the guardian role and the pause bitmask, inherited by the pool and the desk. Pausing is a guardian or owner action with no timelock; unpausing is the owner's alone.
 - `PartnershipDesk.sol`: the profit and loss sharing track. Owner-created partnerships, pro-rata funding, capital to the operator on activation, onchain return reports, optional auditor-approved settlement, profit split at the agreed ratio, genuine losses on the capital.
 - `PassportRegistry.sol`: attester-written five-check bitmask with optional expiry and revocation; `isEligible` is the single question integrated platforms ask.
@@ -74,6 +75,24 @@ The invariant suite holds `balance + debt == deposits + fees + reserve` across r
 
 The policy behind the numbers, and the reserve's target size: [docs/risk-parameters.md](../docs/risk-parameters.md).
 
+## Ownership and the timelock
+
+Three roles, deliberately separate.
+
+**The multisig owns the contracts.** It appoints the guardian, unpauses, collects fees, withdraws from the reserve, and sets the price updater. None of those change what an existing position is worth.
+
+**The timelock holds the risk parameters.** LTVs, liquidation thresholds, caps, the global ceiling, the position floor, the liquidity buffer, price guards, feed swaps, fees, the liquidation incentive, the reserve share, and the desk's auditor all carry `onlyTimelock`. The multisig **cannot reach them directly** even though it owns the contracts; it has to queue a change, wait, and execute. That is enforced onchain rather than by convention.
+
+A timelock does not make a decision better. What it buys is a window: a change is visible onchain, with its full calldata in the `Queued` event, before it binds anyone. A lender who disagrees with a new LTV can leave before it applies to them.
+
+**The guardian holds the brake, outside all of it.** Pausing is immediate and needs no delay and no second signature.
+
+`SafixTimelock` enforces a 24-hour floor on its own delay, and `setDelay` and `setAdmin` run only through the timelock itself — so shortening the delay is announced as far ahead as anything else. Queued operations expire after 14 days. Cancelling is immediate.
+
+Until a timelock is wired, `timelock` is zero and the owner sets risk parameters directly, which is how a fresh deployment is configured at all. `setTimelock` closes that door, and `Deploy.s.sol` does it last, after every parameter is in place and immediately before ownership moves.
+
+The signer set, the threshold and the delay: [docs/risk-parameters.md](../docs/risk-parameters.md).
+
 ## Emergency pause
 
 A guardian, separate from the owner, can stop new risk-taking in the block it decides to. Only the owner can start it again. The asymmetry is the point: stopping is urgent and one signer's judgement is enough, restarting is a considered decision and belongs to the owner, which becomes the multisig. A guardian that could also unpause would be a second key with the owner's authority.
@@ -113,7 +132,7 @@ There is no timelock on pausing. A brake that waits is not a brake.
 forge test
 ```
 
-117 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a bad debt suite covering gap-down liquidation, the reserve absorbing a shortfall, the reserve running dry with the remainder socialised, and the underwater dust write-off, each ending with a solvency assertion; a risk caps suite that tests every cap boundary from both sides and holds the accumulators to the positions they summarise; an emergency pause suite that drives every user-facing entry point through all eight combinations of the pool's pause bits and holds the role split and the exits open in each; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
+134 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a timelock suite covering the delay and its boundary, expiry, cancellation, the floor on the delay, and the line between what waits and what does not; a bad debt suite covering gap-down liquidation, the reserve absorbing a shortfall, the reserve running dry with the remainder socialised, and the underwater dust write-off, each ending with a solvency assertion; a risk caps suite that tests every cap boundary from both sides and holds the accumulators to the positions they summarise; an emergency pause suite that drives every user-facing entry point through all eight combinations of the pool's pause bits and holds the role split and the exits open in each; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
 
 ## Deploy
 

@@ -201,7 +201,7 @@ contract SafixPoolTest is Test {
 
     function testOnlyOwnerGuards() public {
         vm.startPrank(keeper);
-        vm.expectRevert(bytes("not owner"));
+        vm.expectRevert(bytes("not timelock"));
         pool.configureAsset(address(tbill), 5000, 6000, 1e18);
         vm.expectRevert(bytes("not price updater"));
         pool.setPrice(address(tbill), 1e18);

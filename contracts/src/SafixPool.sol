@@ -76,6 +76,11 @@ contract SafixPool is Guardable {
 
     IERC20 public immutable stable;
     address public owner;
+
+    /// @notice Holds the delay on risk parameters. Zero means none is wired yet and the owner still
+    ///         sets them directly, which is the state a deployment is configured in.
+    address public timelock;
+
     address public priceUpdater;
     address public passportRegistry;
 
@@ -172,6 +177,7 @@ contract SafixPool is Guardable {
     );
     event FeesCollected(address indexed to, uint256 amount);
     event OwnerChanged(address indexed newOwner);
+    event TimelockSet(address indexed timelock);
     event PriceUpdaterSet(address indexed updater);
     event PriceFeedSet(address indexed asset, address indexed feed);
     event PassportRegistrySet(address indexed registry);
@@ -203,6 +209,14 @@ contract SafixPool is Guardable {
         _;
     }
 
+    /// @dev Guards the parameters that change what a position is worth or when it is liquidated.
+    ///      Until a timelock is wired the owner holds this, which is how a fresh deployment gets
+    ///      configured; once one is set, the owner cannot reach these functions at all.
+    modifier onlyTimelock() {
+        require(msg.sender == (timelock == address(0) ? owner : timelock), "not timelock");
+        _;
+    }
+
     modifier nonReentrant() {
         require(!entered, "reentrancy");
         entered = true;
@@ -219,6 +233,13 @@ contract SafixPool is Guardable {
         require(newOwner != address(0), "zero owner");
         owner = newOwner;
         emit OwnerChanged(newOwner);
+    }
+
+    /// @notice Wires the timelock that risk parameters have to pass through. Set once at handover;
+    ///         afterwards the owner can no longer change an LTV, a fee or a cap directly.
+    function setTimelock(address newTimelock) external onlyTimelock {
+        timelock = newTimelock;
+        emit TimelockSet(newTimelock);
     }
 
     /// @notice Appoints the guardian. Separate from the owner so the brake can be held by a key
@@ -240,7 +261,7 @@ contract SafixPool is Guardable {
         _unpause(actions, msg.sender);
     }
 
-    function setFees(uint16 originationBps, uint16 redemptionBps) external onlyOwner {
+    function setFees(uint16 originationBps, uint16 redemptionBps) external onlyTimelock {
         require(originationBps <= 500 && redemptionBps <= 500, "fee too high");
         originationFeeBps = originationBps;
         redemptionFeeBps = redemptionBps;
@@ -257,7 +278,7 @@ contract SafixPool is Guardable {
         emit PassportRegistrySet(registry);
     }
 
-    function setLiquidationIncentive(uint16 bps) external onlyOwner {
+    function setLiquidationIncentive(uint16 bps) external onlyTimelock {
         require(bps <= 200, "too high");
         liquidationIncentiveBps = bps;
         emit LiquidationIncentiveSet(bps);
@@ -280,7 +301,7 @@ contract SafixPool is Guardable {
         uint16 maxDeviationBps,
         uint256 minPrice1e18,
         uint256 maxPrice1e18
-    ) external onlyOwner {
+    ) external onlyTimelock {
         require(maxDeviationBps <= BPS, "bad deviation");
         require(maxPrice1e18 == 0 || minPrice1e18 <= maxPrice1e18, "bad band");
         priceGuards[asset] = PriceGuard({
@@ -297,7 +318,7 @@ contract SafixPool is Guardable {
         uint16 maxLtvBps,
         uint16 liqThresholdBps,
         uint256 priceUsd1e18
-    ) external onlyOwner {
+    ) external onlyTimelock {
         require(maxLtvBps < liqThresholdBps && liqThresholdBps <= BPS, "bad config");
         AssetConfig storage config = assetConfig[asset];
         if (!config.enabled) assetList.push(asset);
@@ -314,7 +335,7 @@ contract SafixPool is Guardable {
     /// @notice Share of each origination fee that goes to the reserve instead of protocol fees.
     ///         Capped at half: past that the protocol stops funding itself, and a reserve nobody can
     ///         afford to operate around is not risk management.
-    function setReserveFeeShare(uint16 bps) external onlyOwner {
+    function setReserveFeeShare(uint16 bps) external onlyTimelock {
         require(bps <= 5_000, "share too high");
         reserveFeeShareBps = bps;
         emit ReserveFeeShareSet(bps);
@@ -343,7 +364,7 @@ contract SafixPool is Guardable {
     ///         `configureAsset` so tuning an LTV never disturbs a cap, or the other way round.
     ///         Either cap may be lowered below current usage: that stops further growth without
     ///         forcing anything open to unwind, which would be a liquidation by another name.
-    function setAssetCaps(address asset, uint256 debtCap, uint256 collateralCap) external onlyOwner {
+    function setAssetCaps(address asset, uint256 debtCap, uint256 collateralCap) external onlyTimelock {
         require(assetConfig[asset].enabled, "asset off");
         assetConfig[asset].debtCap = debtCap;
         assetConfig[asset].collateralCap = collateralCap;
@@ -354,7 +375,7 @@ contract SafixPool is Guardable {
     ///         and how much liquidity a draw has to leave behind. Zero disables any of them.
     function setRiskLimits(uint256 globalDebtCeiling_, uint256 minPositionDebt_, uint256 minLiquidityBuffer_)
         external
-        onlyOwner
+        onlyTimelock
     {
         globalDebtCeiling = globalDebtCeiling_;
         minPositionDebt = minPositionDebt_;
@@ -413,7 +434,7 @@ contract SafixPool is Guardable {
         emit PriceSet(asset, priceUsd1e18);
     }
 
-    function setPriceFeed(address asset, address feed) external onlyOwner {
+    function setPriceFeed(address asset, address feed) external onlyTimelock {
         require(assetConfig[asset].enabled, "asset off");
         if (feed != address(0)) {
             uint8 feedDecimals = IAggregatorV3(feed).decimals();

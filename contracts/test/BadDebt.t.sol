@@ -125,7 +125,7 @@ contract BadDebtTest is Test {
         pool.setReserveFeeShare(5_001);
 
         vm.startPrank(outsider);
-        vm.expectRevert(bytes("not owner"));
+        vm.expectRevert(bytes("not timelock"));
         pool.setReserveFeeShare(100);
         vm.expectRevert(bytes("not owner"));
         pool.withdrawReserve(outsider, 1);

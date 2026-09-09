@@ -33,6 +33,10 @@ contract PartnershipDesk is Guardable {
 
     IERC20 public immutable stable;
     address public owner;
+
+    /// @notice Holds the delay on the auditor mandate. Zero means none is wired yet.
+    address public timelock;
+
     address public auditor;
     uint256 public partnershipCount;
     mapping(uint256 => bool) public settlementApproved;
@@ -45,6 +49,7 @@ contract PartnershipDesk is Guardable {
 
     event OwnerChanged(address indexed newOwner);
     event AuditorSet(address indexed auditor);
+    event TimelockSet(address indexed timelock);
     event SettlementApproved(uint256 indexed id, address indexed auditor);
     event PartnershipCreated(
         uint256 indexed id,
@@ -66,6 +71,11 @@ contract PartnershipDesk is Guardable {
         _;
     }
 
+    modifier onlyTimelock() {
+        require(msg.sender == (timelock == address(0) ? owner : timelock), "not timelock");
+        _;
+    }
+
     modifier nonReentrant() {
         require(!entered, "reentrancy");
         entered = true;
@@ -84,6 +94,13 @@ contract PartnershipDesk is Guardable {
         emit OwnerChanged(newOwner);
     }
 
+    /// @notice Wires the timelock. The desk's auditor is the setting that changes what a funder is
+    ///         exposed to, so it moves behind the delay once one is set.
+    function setTimelock(address newTimelock) external onlyTimelock {
+        timelock = newTimelock;
+        emit TimelockSet(newTimelock);
+    }
+
     /// @notice Appoints the guardian, separate from the owner.
     function setGuardian(address newGuardian) external onlyOwner {
         _setGuardian(newGuardian);
@@ -100,7 +117,7 @@ contract PartnershipDesk is Guardable {
         _unpause(actions, msg.sender);
     }
 
-    function setAuditor(address auditor_) external onlyOwner {
+    function setAuditor(address auditor_) external onlyTimelock {
         auditor = auditor_;
         emit AuditorSet(auditor_);
     }
