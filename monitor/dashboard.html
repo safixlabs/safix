@@ -1,0 +1,235 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Safix — protocol state</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!--
+  Reads the pool directly over JSON-RPC. No server, no build step, no database: open this file,
+  point it at an RPC and a pool address, and it shows what the contracts say. Every number here
+  is one eth_call, so it cannot drift from the chain the way a cached copy would.
+
+  Deliberately dependency-free, so it works from file://, from a laptop during an incident, and
+  from a static host, with nothing to install and nothing to keep running.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #10151c; --muted: #5b6875; --line: #e3e8ee;
+    --card: #f7f9fb; --ok: #0a7c50; --warn: #a35b00; --bad: #b3261e; --accent: #0a6b5c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#232a33; --card:#141a22;
+            --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#2dd4bf; }
+  }
+  * { box-sizing: border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap }
+  h1 { font-size:16px; margin:0; letter-spacing:-0.01em }
+  input { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--fg); min-width:0 }
+  input.rpc { flex:1 1 320px } input.pool { flex:1 1 380px; font-family:ui-monospace,monospace; font-size:12px }
+  button { font:inherit; padding:6px 14px; border:1px solid var(--line); border-radius:4px; background:var(--card); color:var(--fg); cursor:pointer }
+  button:hover { border-color:var(--accent) }
+  main { padding:24px; max-width:1200px }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:24px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:14px }
+  .card .label { color:var(--muted); font-size:12px; margin-bottom:6px }
+  .card .value { font-size:20px; font-variant-numeric:tabular-nums; letter-spacing:-0.02em }
+  .card .sub { color:var(--muted); font-size:12px; margin-top:4px }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin:28px 0 10px }
+  table { width:100%; border-collapse:collapse; font-size:13px }
+  th { text-align:left; color:var(--muted); font-weight:500; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap }
+  td { padding:8px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums }
+  td.mono { font-family:ui-monospace,monospace; font-size:12px }
+  .ok { color:var(--ok) } .warn { color:var(--warn) } .bad { color:var(--bad) }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; border:1px solid currentColor }
+  #status { color:var(--muted); font-size:12px }
+  .empty { color:var(--muted); padding:14px 0 }
+  .wrap { overflow-x:auto }
+</style>
+
+<header>
+  <h1>Safix — protocol state</h1>
+  <input class="rpc" id="rpc" value="https://rpc.testnet.chain.robinhood.com" />
+  <input class="pool" id="pool" placeholder="pool address 0x…" />
+  <button id="refresh">Refresh</button>
+  <span id="status">idle</span>
+</header>
+
+<main>
+  <div class="grid" id="headline"></div>
+  <h2>Assets</h2>
+  <div class="wrap"><table id="assets"><thead><tr>
+    <th>Asset</th><th>Price</th><th>Oracle age</th><th>Status</th><th>Debt</th><th>Debt cap</th><th>Collateral</th>
+  </tr></thead><tbody></tbody></table></div>
+  <h2>Positions, closest to liquidation first</h2>
+  <div class="wrap"><table id="positions"><thead><tr>
+    <th>Borrower</th><th>Asset</th><th>Collateral value</th><th>Debt</th><th>Health</th><th></th>
+  </tr></thead><tbody></tbody></table></div>
+</main>
+
+<script type="module">
+  // Function selectors, so the page needs no keccak implementation and therefore no library.
+  // The signature each one comes from is written beside it and can be checked with `cast sig`.
+  const SEL = {
+    totalDeposits:      "0x7d882097", // totalDeposits()
+    totalDebt:          "0xfc7b9c18", // totalDebt()
+    availableLiquidity: "0x74375359", // availableLiquidity()
+    drawableLiquidity:  "0x4c6406ce", // drawableLiquidity()
+    protocolFees:       "0x1ad8b03b", // protocolFees()
+    reserve:            "0xcd3293de", // reserve()
+    badDebt:            "0xbbcac557", // badDebt()
+    pausedActions:      "0x421f0a18", // pausedActions()
+    assetCount:         "0xeafe7a74", // assetCount()
+    assetList:          "0xa0b4b301", // assetList(uint256)
+    assetConfig:        "0xd6dbaf58", // assetConfig(address)
+    priceStatus:        "0xbab48afd", // priceStatus(address)
+    priceGuards:        "0x85308447", // priceGuards(address)
+    assetDebt:          "0xb9d2827b", // assetDebt(address)
+    assetCollateral:    "0xa546b496", // assetCollateral(address)
+    positions:          "0x4bd21445", // positions(address,address)
+    isLiquidatable:     "0x3966a28b"  // isLiquidatable(address,address)
+  }
+  const PRICE_STATUS = ["Ok","AssetDisabled","SequencerDown","SequencerGracePeriod","FeedUnavailable","Stale","BelowBand","AboveBand","DeviationTooLarge"]
+  const PAUSE = ["draws","deposits","liquidations"]
+
+  const $ = id => document.getElementById(id)
+  const pad = hex => hex.replace(/^0x/,"").padStart(64,"0")
+  const word = (data, i) => BigInt("0x" + data.slice(2 + i*64, 2 + (i+1)*64))
+  const addrArg = a => pad(a.toLowerCase())
+  const uintArg = n => pad(BigInt(n).toString(16))
+
+  let rpcId = 0
+  async function rpc(method, params) {
+    const res = await fetch($("rpc").value.trim(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params })
+    }).then(r => r.json())
+    if (res.error) throw new Error(res.error.message)
+    return res.result
+  }
+  const call = (to, data) => rpc("eth_call", [{ to, data }, "latest"])
+
+  const usd = v => (Number(v) / 1e6).toLocaleString("en-US", { maximumFractionDigits: 0 }) + " USDG"
+  const price = v => "$" + (Number(v) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 4 })
+  const tok = v => (Number(v) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 4 })
+  const short = a => a.slice(0,8) + "…" + a.slice(-4)
+  const age = s => s < 0 ? "—" : s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s/60)}m` : `${Math.round(s/3600)}h`
+
+  const card = (label, value, sub, cls = "") =>
+    `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`
+
+  async function load() {
+    const pool = $("pool").value.trim()
+    if (!/^0x[0-9a-fA-F]{40}$/.test(pool)) { $("status").textContent = "enter a pool address"; return }
+    $("status").textContent = "reading…"
+
+    try {
+      const one = sel => call(pool, sel).then(d => word(d, 0))
+      const [deposits, debt, available, drawable, fees, reserve, badDebt, paused, count, block] = await Promise.all([
+        one(SEL.totalDeposits), one(SEL.totalDebt), one(SEL.availableLiquidity), one(SEL.drawableLiquidity),
+        one(SEL.protocolFees), one(SEL.reserve), one(SEL.badDebt), one(SEL.pausedActions), one(SEL.assetCount),
+        rpc("eth_getBlockByNumber", ["latest", false])
+      ])
+      const now = Number(BigInt(block.timestamp))
+      const utilisation = deposits > 0n ? Number(debt * 10000n / deposits) / 100 : 0
+      const pausedNames = PAUSE.filter((_, i) => (Number(paused) & (1 << i)) !== 0)
+
+      $("headline").innerHTML = [
+        card("Pool size", usd(deposits), "deposited by providers"),
+        card("Total debt", usd(debt), `${utilisation.toFixed(1)}% utilised`,
+             utilisation >= 95 ? "bad" : utilisation >= 80 ? "warn" : ""),
+        card("Available liquidity", usd(available), `${usd(drawable)} drawable`),
+        card("Reserve", usd(reserve), "held against bad debt"),
+        card("Bad debt", usd(badDebt), "absorbed by providers", badDebt > 0n ? "warn" : "ok"),
+        card("Protocol fees", usd(fees), "uncollected"),
+        card("Paused", pausedNames.length ? pausedNames.join(", ") : "nothing",
+             pausedNames.length ? "guardian has pulled the brake" : "all actions open",
+             pausedNames.length ? "bad" : "ok")
+      ].join("")
+
+      // --- assets
+      const assets = []
+      for (let i = 0n; i < count; i++) {
+        const address = "0x" + (await call(pool, SEL.assetList + uintArg(i))).slice(-40)
+        const [config, status, guard, aDebt, aColl] = await Promise.all([
+          call(pool, SEL.assetConfig + addrArg(address)),
+          call(pool, SEL.priceStatus + addrArg(address)),
+          call(pool, SEL.priceGuards + addrArg(address)),
+          call(pool, SEL.assetDebt + addrArg(address)).then(d => word(d,0)),
+          call(pool, SEL.assetCollateral + addrArg(address)).then(d => word(d,0))
+        ])
+        const statusCode = Number(word(status, 0))
+        const statusPrice = word(status, 1)
+        const updatedAt = Number(word(status, 2))
+        assets.push({
+          address,
+          liqThresholdBps: Number(word(config, 2)),
+          price: statusPrice > 0n ? statusPrice : word(config, 3),
+          debtCap: word(config, 4),
+          status: PRICE_STATUS[statusCode] ?? statusCode,
+          maxPriceAge: Number(word(guard, 0)),
+          age: updatedAt > 0 ? Math.max(0, now - updatedAt) : -1,
+          debt: aDebt, collateral: aColl
+        })
+      }
+      $("assets").tBodies[0].innerHTML = assets.map(a => {
+        const stale = a.maxPriceAge > 0 && a.age >= a.maxPriceAge * 0.8
+        return `<tr>
+          <td class="mono">${short(a.address)}</td>
+          <td>${price(a.price)}</td>
+          <td class="${stale ? "warn" : ""}">${age(a.age)}${a.maxPriceAge ? ` / ${age(a.maxPriceAge)}` : ""}</td>
+          <td><span class="pill ${a.status === "Ok" ? "ok" : "bad"}">${a.status}</span></td>
+          <td>${usd(a.debt)}</td>
+          <td>${a.debtCap === 0n ? "uncapped" : usd(a.debtCap)}</td>
+          <td>${tok(a.collateral)}</td>
+        </tr>`
+      }).join("") || `<tr><td colspan="7" class="empty">no assets configured</td></tr>`
+
+      // --- positions, from Drawn events
+      const logs = await rpc("eth_getLogs", [{
+        address: pool, fromBlock: "0x0", toBlock: "latest",
+        // Drawn(address,address,uint256,uint256)
+        topics: ["0xa707855136c276588436334ea42d6bf6b7eba61c92725b7386960d09dd77c882"]
+      }]).catch(() => [])
+      const pairs = new Map()
+      for (const entry of logs) {
+        if (!entry.topics || entry.topics.length < 3) continue
+        pairs.set(entry.topics[1] + entry.topics[2],
+          ["0x" + entry.topics[1].slice(-40), "0x" + entry.topics[2].slice(-40)])
+      }
+
+      const rows = []
+      for (const [borrower, asset] of pairs.values()) {
+        const p = await call(pool, SEL.positions + addrArg(borrower) + addrArg(asset))
+        const collateral = word(p, 0), pDebt = word(p, 1)
+        if (pDebt === 0n) continue
+        const meta = assets.find(a => a.address.toLowerCase() === asset.toLowerCase())
+        if (!meta) continue
+        const value = collateral * meta.price / (10n ** 30n)
+        const liqValue = meta.liqThresholdBps > 0 ? pDebt * 10000n / BigInt(meta.liqThresholdBps) : 0n
+        const health = liqValue > 0n ? Number(value * 10000n / liqValue) / 10000 : 0
+        const liq = BigInt(await call(pool, SEL.isLiquidatable + addrArg(borrower) + addrArg(asset))) === 1n
+        rows.push({ borrower, asset, value, debt: pDebt, health, liq })
+      }
+      rows.sort((a, b) => a.health - b.health)
+
+      $("positions").tBodies[0].innerHTML = rows.map(r => `<tr>
+        <td class="mono">${short(r.borrower)}</td>
+        <td class="mono">${short(r.asset)}</td>
+        <td>${usd(r.value)}</td>
+        <td>${usd(r.debt)}</td>
+        <td class="${r.health < 1 ? "bad" : r.health < 1.15 ? "warn" : "ok"}">${r.health.toFixed(3)}×</td>
+        <td>${r.liq ? '<span class="pill bad">liquidatable</span>' : ""}</td>
+      </tr>`).join("") || `<tr><td colspan="6" class="empty">no open positions</td></tr>`
+
+      $("status").textContent = `block ${BigInt(block.number)} · ${new Date().toLocaleTimeString()}`
+    } catch (error) {
+      $("status").textContent = "error: " + error.message
+    }
+  }
+
+  $("refresh").addEventListener("click", load)
+  const params = new URLSearchParams(location.search)
+  if (params.get("rpc")) $("rpc").value = params.get("rpc")
+  if (params.get("pool")) { $("pool").value = params.get("pool"); load() }
+</script>

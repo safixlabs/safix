@@ -9,3 +9,5 @@ contracts/cache/
 contracts/broadcast/
 keeper/node_modules/
 keeper/config.json
+monitor/config.json
+monitor/node_modules/

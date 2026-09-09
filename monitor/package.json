@@ -1,0 +1,19 @@
+{
+  "name": "safix-monitor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scan": "tsx monitor.ts scan",
+    "watch": "tsx monitor.ts watch",
+    "drill": "tsx monitor.ts drill",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "viem": "^2.38.0",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

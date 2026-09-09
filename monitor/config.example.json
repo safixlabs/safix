@@ -1,0 +1,20 @@
+{
+  "rpcUrl": "https://rpc.testnet.chain.robinhood.com",
+  "poolAddress": "0x0000000000000000000000000000000000000000",
+  "deployBlock": 0,
+  "intervalMs": 60000,
+  "logChunkBlocks": 50000,
+  "instanceId": "monitor-1",
+  "keeperAddress": null,
+  "alerts": {
+    "cooldownMs": 900000
+  },
+  "thresholds": {
+    "utilisationBps": 8000,
+    "positionAtRiskSeconds": 300,
+    "keeperSilentSeconds": 900,
+    "oracleAgeWarningRatio": 0.8,
+    "largeFlowBps": 1000,
+    "flowWindowBlocks": 5000
+  }
+}
