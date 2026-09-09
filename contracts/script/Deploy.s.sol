@@ -36,6 +36,15 @@ contract Deploy is Script {
         PassportRegistry registry = new PassportRegistry();
         PartnershipDesk desk = new PartnershipDesk(address(usdc));
 
+        // The brake, held by a key separate from the owner's. Passed in rather than derived, so the
+        // guardian is a deliberate choice; with none given the owner can still pause, which is the
+        // pre-existing authority rather than a new one.
+        address guardian = vm.envOr("GUARDIAN", address(0));
+        if (guardian != address(0)) {
+            pool.setGuardian(guardian);
+            desk.setGuardian(guardian);
+        }
+
         address deployer = vm.addr(deployerKey);
         registry.attest(deployer, 0x1f, 0);
         desk.createPartnership(deployer, 4000, 100_000e6, uint64(block.timestamp + 30 days));
@@ -56,5 +65,6 @@ contract Deploy is Script {
         console.log("pool", address(pool));
         console.log("registry", address(registry));
         console.log("desk", address(desk));
+        console.log("guardian", guardian);
     }
 }

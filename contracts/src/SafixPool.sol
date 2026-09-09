@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity 0.8.26;
 
+import {Guardable} from "./Guardable.sol";
 import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IPassportRegistry} from "./interfaces/IPassportRegistry.sol";
 
-contract SafixPool {
+contract SafixPool is Guardable {
+    /// @notice Pausable actions. Each is a bit, so `pause(PAUSE_ALL)` is one transaction.
+    /// Only the three ways new risk enters the pool are pausable. Repaying, closing a position,
+    /// withdrawing collateral, claiming gains and withdrawing liquidity have no switch at all:
+    /// whatever the emergency, nobody is locked in.
+    uint8 public constant PAUSE_DRAWS = 1;
+    uint8 public constant PAUSE_DEPOSITS = 2;
+    uint8 public constant PAUSE_LIQUIDATIONS = 4;
+    uint8 public constant PAUSE_ALL = 7;
+
     struct AssetConfig {
         bool enabled;
         uint16 maxLtvBps;
@@ -148,6 +158,25 @@ contract SafixPool {
         require(newOwner != address(0), "zero owner");
         owner = newOwner;
         emit OwnerChanged(newOwner);
+    }
+
+    /// @notice Appoints the guardian. Separate from the owner so the brake can be held by a key
+    ///         that is quick to reach, without giving it the owner's authority.
+    function setGuardian(address newGuardian) external onlyOwner {
+        _setGuardian(newGuardian);
+    }
+
+    /// @notice Stops the given actions immediately. No timelock: a brake that waits is not a brake.
+    ///         `pause(PAUSE_ALL)` stops every way new risk enters the pool in a single transaction.
+    function pause(uint8 actions) external {
+        require(msg.sender == guardian || msg.sender == owner, "not guardian");
+        _pause(actions, msg.sender);
+    }
+
+    /// @notice Resumes the given actions. Owner only, never the guardian alone: stopping is urgent,
+    ///         restarting is a decision.
+    function unpause(uint8 actions) external onlyOwner {
+        _unpause(actions, msg.sender);
     }
 
     function setFees(uint16 originationBps, uint16 redemptionBps) external onlyOwner {
@@ -418,6 +447,7 @@ contract SafixPool {
     }
 
     function deposit(uint256 amount) external nonReentrant {
+        require(!isPaused(PAUSE_DEPOSITS), "deposits paused");
         require(amount > 0, "zero");
         _realize(msg.sender);
         DepositRecord storage record = depositRecords[msg.sender];
@@ -480,6 +510,7 @@ contract SafixPool {
     }
 
     function draw(address asset, uint256 amount) external nonReentrant {
+        require(!isPaused(PAUSE_DRAWS), "draws paused");
         AssetConfig storage config = assetConfig[asset];
         require(config.enabled, "asset off");
         require(amount > 0, "zero");
@@ -542,6 +573,7 @@ contract SafixPool {
     }
 
     function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
+        require(!isPaused(PAUSE_LIQUIDATIONS), "liquidations paused");
         // Reverts with the reason the price is unusable, rather than the misleading "healthy".
         _requireUsablePrice(asset);
         require(isLiquidatable(borrower, asset), "healthy");

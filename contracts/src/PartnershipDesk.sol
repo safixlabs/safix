@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity 0.8.26;
 
+import {Guardable} from "./Guardable.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 
-contract PartnershipDesk {
+contract PartnershipDesk is Guardable {
+    /// @notice Only funding is pausable: it is the one action that puts new capital at risk.
+    /// Reporting a return, settling, and both claims stay open in every state, so a funder is
+    /// never left unable to collect and an operator is never unable to pay back.
+    uint8 public constant PAUSE_FUNDING = 1;
+    uint8 public constant PAUSE_ALL = 1;
+
     enum Status {
         Funding,
         Active,
@@ -77,6 +84,22 @@ contract PartnershipDesk {
         emit OwnerChanged(newOwner);
     }
 
+    /// @notice Appoints the guardian, separate from the owner.
+    function setGuardian(address newGuardian) external onlyOwner {
+        _setGuardian(newGuardian);
+    }
+
+    /// @notice Stops new funding immediately, with no timelock.
+    function pause(uint8 actions) external {
+        require(msg.sender == guardian || msg.sender == owner, "not guardian");
+        _pause(actions, msg.sender);
+    }
+
+    /// @notice Resumes funding. Owner only, never the guardian alone.
+    function unpause(uint8 actions) external onlyOwner {
+        _unpause(actions, msg.sender);
+    }
+
     function setAuditor(address auditor_) external onlyOwner {
         auditor = auditor_;
         emit AuditorSet(auditor_);
@@ -113,6 +136,7 @@ contract PartnershipDesk {
     }
 
     function fund(uint256 id, uint256 amount) external nonReentrant {
+        require(!isPaused(PAUSE_FUNDING), "funding paused");
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Funding, "not funding");
         require(block.timestamp <= partnership.fundingDeadline, "past deadline");

@@ -1,48 +1,48 @@
 {
   "network": "testnet",
   "chainId": 46630,
-  "commit": "d42888de65a9c59e4bcce47b1471cf388bf74a0c",
+  "commit": "a3c54e479d882a5e327d5e9b4ffc6bd915bbcff2",
   "sourceIsDirty": false,
   "worktreeIsDirty": false,
   "script": "Deploy.s.sol",
-  "deployBlock": 114456481,
-  "deployedAt": "2026-09-06T23:49:39.576Z",
+  "deployBlock": 114830936,
+  "deployedAt": "2026-09-07T11:49:49.692Z",
   "explorer": "https://explorer.testnet.chain.robinhood.com",
   "contracts": {
     "tUSDG": {
-      "address": "0x66e0b150f0d04ce5d0dc1ad05fb3b56403381d0b",
-      "transactionHash": "0x27dd530f7848c1e248570cc34acf443c10cdaf971987bce5bfb0c0b0533e5389",
-      "block": 114456481
+      "address": "0xbc0e6fe1730a15b932f0fe5f67e82d3726da9528",
+      "transactionHash": "0x8df2d41c37e8d9d7d084a766a03a1a429a0f26cfc53fb957146854bff1a0ef64",
+      "block": 114830936
     },
     "tBILL": {
-      "address": "0xef0dc9d2dfea109309298770c5631f5171452ef4",
-      "transactionHash": "0x6de7e1a19b0ab194f0ccb986155944a5786b3fe1ebf48d52bac1f3653f88e511",
-      "block": 114456503
+      "address": "0x259d1ef925953148d12a91c4178b70a5d2b0cdce",
+      "transactionHash": "0x84b8e3346292d29cee2a0d998744486f3616a6cb516aba82bebecad9a786fd08",
+      "block": 114830963
     },
     "bNVDA": {
-      "address": "0xb5e95c7690936ede575348d613172d8a0ceeb524",
-      "transactionHash": "0x5eaac53f27cb608cc2199367133d18119d6fa7e47ddfe27cd9cfb216aa63a035",
-      "block": 114456528
+      "address": "0x0b9533db0abc745078686336ac9b70e794691af9",
+      "transactionHash": "0x0dd2fb26dbffea0ab506634d175f36ee04a3741cfb54afcda3e0847455fedab1",
+      "block": 114830974
     },
     "tGOLD": {
-      "address": "0x4f77400ee0e5a81137cbdf3445628a9a64b3c6c6",
-      "transactionHash": "0xf6df4e6325b800d9fda2783840b8756307b9ef098afd0f611374d3c26cb4d91a",
-      "block": 114456556
+      "address": "0xc31bec5a616f18c359ce787a21b3e9d23b04ea18",
+      "transactionHash": "0xdd28fc7ca2bef5691ff6d2e7109a0254a014ad64b2fa0ec19a236abd8e8fbf31",
+      "block": 114831001
     },
     "SafixPool": {
-      "address": "0x73e96898b314865e416ff563da1320415b77a1d6",
-      "transactionHash": "0x1d37de5057882dbf855f6ee7351b90420cae840205405879b5773c8b3158f09d",
-      "block": 114456566
+      "address": "0x1cf524a1d89e4f095da26873cb03e9bcdb9470d9",
+      "transactionHash": "0x711735dd7e45f81d891703041d747269a11d37b0e49fe5d02f9c85b00ae26f0a",
+      "block": 114831026
     },
     "PassportRegistry": {
-      "address": "0xb800167f469bea780c67c3e3239a7de32718b959",
-      "transactionHash": "0x0afe7bd0952a7eab2257c3f102bcd7171d6672d282c0aed73654490bdc805993",
-      "block": 114456751
+      "address": "0xd52ed1bb55705d13e6be51be6eba73b138899832",
+      "transactionHash": "0x7d4cb5a610ffdd02fb290f1b4e6e8b75d7f7cd2c372d1830de9b2dfda5b718a4",
+      "block": 114831131
     },
     "PartnershipDesk": {
-      "address": "0x6b0535b511c9620803d31413ae70e40cb9cdad3a",
-      "transactionHash": "0xb35eefbdcc55f799cadcf7b10701c52ed57c527dde135ad8aba62b917a5a2068",
-      "block": 114456772
+      "address": "0x095dd8f51723ddb6f84eee6aca29f0fdc068872c",
+      "transactionHash": "0x3959ccccb77ec1c66e3246755b5f102df83cdf22e611bcb0580884e4f395717a",
+      "block": 114831152
     }
   }
 }
