@@ -49,6 +49,33 @@ contract Deploy is Script {
         // it reaches providers. See docs/risk-parameters.md for why a quarter.
         pool.setReserveFeeShare(2_500);
 
+        // A real tokenized asset with its real Chainlink feed, when one is passed in. The token and
+        // the feed are addresses on the chain being deployed to, not something this script creates,
+        // so the same path works on mainnet with a mainnet token and a mainnet feed.
+        //
+        // REAL_ASSET / REAL_FEED come from docs/asset-onboarding.md, which is where the checks that
+        // produce them are written down. REAL_MAX_PRICE_AGE exists because a testnet feed is not
+        // maintained at its mainnet heartbeat: see the runbook.
+        address realAsset = vm.envOr("REAL_ASSET", address(0));
+        if (realAsset != address(0)) {
+            address realFeed = vm.envAddress("REAL_FEED");
+            uint16 realLtv = uint16(vm.envOr("REAL_MAX_LTV_BPS", uint256(5500)));
+            uint16 realThreshold = uint16(vm.envOr("REAL_LIQ_THRESHOLD_BPS", uint256(7000)));
+            uint64 realMaxAge = uint64(vm.envOr("REAL_MAX_PRICE_AGE", uint256(1 days)));
+            uint16 realDeviation = uint16(vm.envOr("REAL_MAX_DEVIATION_BPS", uint256(2000)));
+            uint256 realMin = vm.envOr("REAL_MIN_PRICE", uint256(0));
+            uint256 realMax = vm.envOr("REAL_MAX_PRICE", uint256(0));
+            uint256 realDebtCap = vm.envOr("REAL_DEBT_CAP", uint256(37_500e6));
+            uint256 realCollateralCap = vm.envOr("REAL_COLLATERAL_CAP", uint256(0));
+
+            // Price is set to 0 here: the feed is the source, and configureAsset's manual price is
+            // only a fallback for assets that have none.
+            pool.configureAsset(realAsset, realLtv, realThreshold, 0);
+            pool.setPriceFeed(realAsset, realFeed);
+            pool.setPriceGuard(realAsset, realMaxAge, realDeviation, realMin, realMax);
+            pool.setAssetCaps(realAsset, realDebtCap, realCollateralCap);
+        }
+
         // The L2 sequencer uptime feed is deliberately left unset: Chainlink has not published one
         // for Robinhood Chain. setSequencerUptimeFeed wires it the day one exists, with no redeploy.
 
@@ -113,5 +140,6 @@ contract Deploy is Script {
         console.log("guardian", guardian);
         console.log("multisig", multisig);
         console.log("timelock", timelockAddress);
+        console.log("realAsset", realAsset);
     }
 }
