@@ -1,0 +1,70 @@
+{
+  "$comment": "Everything the security policy, the bug bounty and the support path are published from. The same file sits in all three Safix repositories. Fields that are null are decisions nobody has taken yet: scripts/check-security.mjs reports them, and scripts/build-security.mjs refuses to publish a channel or a reward that does not exist. Filling one in and re-running the generators is the whole of the work left.",
+  "contact": {
+    "email": null,
+    "githubAdvisories": false,
+    "pgpFingerprint": null
+  },
+  "disclosure": {
+    "acknowledgeWithinHours": 48,
+    "triageWithinDays": 5,
+    "fixTargetDays": { "critical": 7, "high": 14, "medium": 30, "low": 90 },
+    "publicAfterFixDays": 30,
+    "maximumEmbargoDays": 90,
+    "safeHarbour": true
+  },
+  "bounty": {
+    "live": false,
+    "currency": null,
+    "rewards": { "critical": null, "high": null, "medium": null, "low": null },
+    "inScope": [
+      "SafixPool: loss of funds, theft of collateral or deposits, minting debt without collateral, breaking the loan-to-value or liquidation-threshold checks",
+      "SafixPool: accounting errors in the product-sum stability pool that misprice a provider's stake or gains",
+      "SafixPool: price handling, including feed staleness, decimal scaling and the manual price path",
+      "PassportRegistry: forging eligibility, bypassing the draw gate, or writing an attestation without being an attester",
+      "PartnershipDesk: taking another funder's payout, claiming twice, or settling without the auditor when one is configured",
+      "Any owner-only function reachable by an account that is not the owner",
+      "The keeper: a path that lets a third party move funds through it, or that makes it liquidate a healthy position",
+      "The application: a flow that makes a user sign a transaction other than the one shown, or that leaks passport data"
+    ],
+    "outOfScope": [
+      "Anything requiring the owner key, the deployer key or an attester key to be compromised first",
+      "Price movements, liquidations and losses that follow from the documented parameters working as designed",
+      "Denial of service against a public RPC endpoint, or gas-cost griefing without loss of funds",
+      "Findings that only apply to a chain, token or configuration Safix does not deploy against",
+      "Automated scanner output with no demonstrated exploit path",
+      "Social engineering, phishing, or physical attacks against anyone working on Safix",
+      "Missing best practices with no exploit, such as a lack of events or a public function that could be external"
+    ]
+  },
+  "support": {
+    "channel": null,
+    "url": null,
+    "responders": [],
+    "responseTargetHours": null
+  },
+  "openSource": {
+    "decided": false,
+    "decisionDue": "before the first mainnet transaction",
+    "repositories": {
+      "safixlabs/safix": {
+        "contents": "Protocol contracts, the Foundry test suite, the liquidation keeper and the information memorandum",
+        "declaredLicense": "AGPL-3.0-only",
+        "licenseSource": "SPDX headers on every Solidity file",
+        "opensAt": null
+      },
+      "safixlabs/safix-app": {
+        "contents": "The application: borrow, pool, partnerships and passport screens",
+        "declaredLicense": null,
+        "licenseSource": null,
+        "opensAt": null
+      },
+      "safixlabs/safix-docs": {
+        "contents": "This documentation site and its generators",
+        "declaredLicense": null,
+        "licenseSource": null,
+        "opensAt": null
+      }
+    }
+  }
+}

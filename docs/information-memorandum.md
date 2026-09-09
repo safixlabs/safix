@@ -1,6 +1,6 @@
 # Safix: unlock capital, keep ownership
 
-Information memorandum, draft v1.1, August 2026
+Information memorandum, draft v1.2, September 2026
 
 Tokenization solved ownership. It did not solve two things that follow from it: everything you own onchain is public, and almost nothing you own onchain can be borrowed against. Safix is a private credit layer that fixes both. Lock tokenized real-world assets as collateral, draw USDG at zero interest, and prove you qualify without showing anyone your portfolio.
 
@@ -51,7 +51,7 @@ Onchain lending bluechips price everything in public and mostly against crypto-n
 
 ## Where we are
 
-Safix is past the paper stage. The protocol core is implemented and tested: a stability pool with Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated credit line, thirty tests green. The pool reads the per-asset Chainlink feeds Robinhood Chain ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and the full lifecycle has been exercised end to end on a devnet: draw, price drop, automated liquidation, provider gains, partnership settlement. The app and the documentation are live. The immediate work is narrower than ever: deploy to Robinhood Chain testnet, wire the real feeds, and put the first tokenized treasuries behind the pool.
+Safix is past the paper stage and past the devnet. The protocol core is implemented and tested: a stability pool with Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated credit line, 156 tests green including five stateful invariants driving randomised sequences of actions. All three contracts are deployed to Robinhood Chain Testnet and readable there, seeded with 251,955 USDG of stability pool liquidity, with the addresses published in the documentation and every parameter read back off the chain rather than described. The pool reads the per-asset Chainlink feeds Robinhood Chain ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and the full lifecycle has been exercised end to end: draw, price drop, automated liquidation, provider gains, partnership settlement. The app and the documentation are live. The immediate work is narrower than ever: verify the contracts on the explorer, wire the real feeds, and put the first tokenized treasuries behind the pool.
 
 ## Risks, honestly
 

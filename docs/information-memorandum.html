@@ -318,7 +318,7 @@
   </header>
 
   <h1>Unlock capital.<br><span>Keep ownership.</span></h1>
-  <p class="meta">Draft v1.1 · August 2026 · Safix, the private credit layer for tokenized assets</p>
+  <p class="meta">Draft v1.2 · September 2026 · Safix, the private credit layer for tokenized assets</p>
 
   <p class="lede">
     Tokenization solved ownership. It did not solve two things that follow from it: everything you own
@@ -429,14 +429,12 @@
 
   <h2>Where we are</h2>
   <p>
-    Safix is past the paper stage. The protocol core is implemented and tested: a stability pool with
-    Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated
-    credit line, thirty tests green. The pool reads the per-asset Chainlink feeds Robinhood Chain
-    ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and
-    the full lifecycle has been exercised end to end on a devnet: draw, price drop, automated
-    liquidation, provider gains, partnership settlement. The app and the documentation are live. The
-    immediate work is narrower than ever: deploy to Robinhood Chain testnet, wire the real feeds, and
-    put the first tokenized treasuries behind the pool.
+    Safix is past the paper stage and past the devnet.
+    The protocol core is implemented and tested: a stability pool with Liquity-style loss accounting, zero-interest draws, partnership financing, and a passport-gated credit line, 156 tests green including five stateful invariants driving randomised sequences of actions.
+    All three contracts are deployed to Robinhood Chain Testnet and readable there, seeded with 251,955 USDG of stability pool liquidity, with the addresses published in the documentation and every parameter read back off the chain rather than described.
+    The pool reads the per-asset Chainlink feeds Robinhood Chain ships for every stock token, an off-chain keeper liquidates unhealthy positions automatically, and the full lifecycle has been exercised end to end: draw, price drop, automated liquidation, provider gains, partnership settlement.
+    The app and the documentation are live.
+    The immediate work is narrower than ever: verify the contracts on the explorer, wire the real feeds, and put the first tokenized treasuries behind the pool.
   </p>
 
   <h2>Risks, honestly</h2>
