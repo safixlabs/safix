@@ -139,6 +139,9 @@ contract PoolInvariantsTest is Test {
         tbill = new MockERC20("Tokenized treasury 3M", "tBILL", 18);
         pool = new SafixPool(address(usdc));
         pool.configureAsset(address(tbill), 8000, 9000, 100e18);
+        // Route a quarter of every origination fee to the reserve so the randomised sequences
+        // exercise funding it, spending it on a shortfall, and running it dry.
+        pool.setReserveFeeShare(2_500);
         handler = new PoolHandler(pool, usdc, tbill);
         pool.setPriceUpdater(address(handler));
         targetContract(address(handler));
@@ -158,10 +161,12 @@ contract PoolInvariantsTest is Test {
         }
     }
 
+    /// @dev Every unit of stable in the pool is claimed by exactly one of: the providers, the fee
+    ///      treasury, or the reserve. Bad debt moves a claim between them and never destroys one.
     function invariant_usdcConservation() public view {
         assertEq(
             usdc.balanceOf(address(pool)) + _sumDebt(),
-            pool.totalDeposits() + pool.protocolFees()
+            pool.totalDeposits() + pool.protocolFees() + pool.reserve()
         );
     }
 

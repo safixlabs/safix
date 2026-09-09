@@ -18,6 +18,7 @@ This document exists so that a parameter is never set by whoever happens to be a
 | `globalDebtCeiling` | pool | `setRiskLimits` | total lending across every asset |
 | `minPositionDebt` | pool | `setRiskLimits` | the smallest position that may stay open |
 | `minLiquidityBuffer` | pool | `setRiskLimits` | liquidity a draw must leave behind |
+| `reserveFeeShareBps` | pool | `setReserveFeeShare` | the share of each origination fee that funds the reserve |
 | `originationFeeBps` / `redemptionFeeBps` | pool | `setFees` | what a draw and a close cost |
 | `liquidationIncentiveBps` | pool | `setLiquidationIncentive` | the keeper's share of seized collateral |
 
@@ -85,6 +86,24 @@ The classes do not have to sum to 100%; `globalDebtCeiling` is what stops the to
 **`minLiquidityBuffer`** starts at **10% of pool size**. It is the floor a draw may not take liquidity below. It does not bound withdrawals: it is there to stop borrowing from consuming the room that exits need, not to hold providers in.
 
 **`minPositionDebt`** is set to **500 stable units**, reviewed if gas on the chain changes by an order of magnitude. The number is a multiple of what a liquidation costs to send, so that seizing a position is always worth more than the transaction that seizes it. Below this a position would sit unliquidatable, which is worse than not opening it.
+
+## Bad debt and the reserve
+
+When a price gaps through the liquidation threshold, the pool cancels more debt than the collateral it receives is worth. That gap is a real loss and it has to land somewhere named.
+
+**The policy: the reserve absorbs a shortfall first, and only what it cannot cover is socialised across providers — recorded in `badDebt`, never absorbed silently.**
+
+Two alternatives were considered and rejected. Holding the loss against protocol fees alone fails because fees are revenue that gets withdrawn; a buffer that can be spent elsewhere is not a buffer. Socialising first fails because a provider should not be the first line of defence against a gap they had no part in creating.
+
+**`reserveFeeShareBps` starts at 2,500** — a quarter of every origination fee. This ties the buffer to the volume that creates the risk: the more the pool lends, the faster its own defence grows. It is capped at 5,000 in the contract, because past half the protocol stops funding its own operation, and a reserve nobody can afford to operate around is not risk management.
+
+**The reserve is seeded at 2% of pool size at deploy**, so the first gap-down does not land on providers before fees have had time to build it. `fundReserve` is open to anyone, so a partner or the protocol can top it up without a privileged path; `withdrawReserve` is owner-only and cannot reach further than the reserve holds.
+
+The reserve sits in the pool's balance but is excluded from available liquidity, exactly as protocol fees are. It is neither lendable nor withdrawable by providers.
+
+**Target size.** The reserve should cover a **full gap-down of the largest single position the caps allow**, at a 50% collateral price shock. With class C capped at 15% of the pool and a 55% LTV, that is roughly 7% of pool size. Below that target, raise `reserveFeeShareBps`; sustained above it, the excess may be withdrawn to the treasury. Reviewed on the same quarterly cycle as everything else here.
+
+**Underwater dust.** A position whose remaining collateral is worth less than the gas to liquidate it will never be taken by a keeper: their incentive is a share of nearly nothing. `absorbBadDebt` lets the owner clear it — the pool takes the collateral, cancels the debt, and books the gap through the same reserve-then-socialise path, with no keeper incentive carved out because there is no keeper. It only accepts a position that is both liquidatable and below `minPositionDebt` in collateral value, so it can never close a healthy loan.
 
 ## Onboarding a new asset
 

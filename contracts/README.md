@@ -60,6 +60,20 @@ Two behaviours worth knowing. A cap may be lowered below current usage: that sto
 
 How each number is chosen, per asset class, and who may change it: [docs/risk-parameters.md](../docs/risk-parameters.md).
 
+## Bad debt and the reserve
+
+A price that gaps through the liquidation threshold leaves the pool cancelling more debt than the collateral it receives is worth. That gap is a real loss, and it now lands somewhere with a name.
+
+`reserve` holds stable against exactly this. It is funded by `reserveFeeShareBps` of every origination fee, topped up by anyone through `fundReserve`, withdrawable only by the owner and only up to what it holds. It sits in the pool's balance but is excluded from available liquidity, the same way protocol fees are: neither lendable nor withdrawable by providers.
+
+On a liquidation the pool compares the debt it cancels against what the seized collateral is actually worth. If the collateral falls short, the reserve pays the difference; whatever the reserve cannot cover is socialised across providers and added to `badDebt`, and `BadDebtRealised` records the split. Providers lose the offset less whatever the reserve paid on their behalf, so total claims fall by exactly the offset either way and the books stay balanced.
+
+`absorbBadDebt(borrower, asset)` handles the position nobody will liquidate: one whose remaining collateral is worth less than the gas to take it. The pool takes the collateral, cancels the debt, and books the gap the same way, with no keeper incentive carved out because there is no keeper. Owner only, and only for a position that is both liquidatable and genuinely dust.
+
+The invariant suite holds `balance + debt == deposits + fees + reserve` across randomised sequences with the reserve live, so every unit of stable is claimed by exactly one of the three and a shortfall moves a claim rather than destroying one.
+
+The policy behind the numbers, and the reserve's target size: [docs/risk-parameters.md](../docs/risk-parameters.md).
+
 ## Emergency pause
 
 A guardian, separate from the owner, can stop new risk-taking in the block it decides to. Only the owner can start it again. The asymmetry is the point: stopping is urgent and one signer's judgement is enough, restarting is a considered decision and belongs to the owner, which becomes the multisig. A guardian that could also unpause would be a second key with the owner's authority.
@@ -99,7 +113,7 @@ There is no timelock on pausing. A brake that waits is not a brake.
 forge test
 ```
 
-100 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a risk caps suite that tests every cap boundary from both sides and holds the accumulators to the positions they summarise; an emergency pause suite that drives every user-facing entry point through all eight combinations of the pool's pause bits and holds the role split and the exits open in each; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
+117 tests: unit coverage for fees, LTV and freshness guards, liquidation gain and loss math, partnership settlement, passports, and Chainlink pricing; a bad debt suite covering gap-down liquidation, the reserve absorbing a shortfall, the reserve running dry with the remainder socialised, and the underwater dust write-off, each ending with a solvency assertion; a risk caps suite that tests every cap boundary from both sides and holds the accumulators to the positions they summarise; an emergency pause suite that drives every user-facing entry point through all eight combinations of the pool's pause bits and holds the role split and the exits open in each; a dedicated oracle safety suite covering sequencer down, the grace window and its boundary, out-of-band prices, sudden jumps between rounds, a reverting feed, per-asset staleness, and the exits staying open through all of it; plus a handler-based invariant suite that drives randomized action sequences and holds exact USDC conservation, compounded-deposit consistency, collateral solvency, and the P multiplier band.
 
 ## Deploy
 

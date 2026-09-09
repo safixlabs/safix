@@ -123,6 +123,27 @@ contract SafixPool is Guardable {
     ///         providers cannot withdraw and liquidations cannot be absorbed. 0 disables the floor.
     uint256 public minLiquidityBuffer;
 
+    /// @notice Stable held against bad debt. It sits in the pool's balance but belongs to neither
+    ///         the providers nor the fee treasury, so it is excluded from available liquidity the
+    ///         same way protocol fees are.
+    ///
+    /// The policy, in one line: **the reserve absorbs a shortfall first, and only what it cannot
+    /// cover is socialised across providers — and even then it is recorded rather than absorbed
+    /// silently.** Holding it against protocol fees alone was rejected because fees are revenue that
+    /// gets withdrawn; a reserve that can be spent elsewhere is not a reserve. Socialising first was
+    /// rejected because a provider should not be the first line of defence against a gap they had no
+    /// part in. Funding it from a share of origination fees ties the buffer to the volume that
+    /// creates the risk.
+    uint256 public reserve;
+
+    /// @notice Share of each origination fee routed to the reserve rather than to protocol fees.
+    uint16 public reserveFeeShareBps;
+
+    /// @notice Shortfall the reserve could not cover, which providers absorbed. Kept as a running
+    ///         total so the loss has a name and a number instead of disappearing into the
+    ///         product-sum accounting.
+    uint256 public badDebt;
+
     uint256 public totalDeposits;
     uint256 public productP = P_PRECISION;
     uint256 public currentScale;
@@ -158,6 +179,16 @@ contract SafixPool is Guardable {
     event FeesSet(uint16 originationBps, uint16 redemptionBps);
     event SequencerUptimeFeedSet(address indexed feed, uint256 gracePeriod);
     event AssetCapsSet(address indexed asset, uint256 debtCap, uint256 collateralCap);
+    event ReserveFeeShareSet(uint16 bps);
+    event ReserveFunded(address indexed from, uint256 amount, uint256 reserveAfter);
+    event ReserveWithdrawn(address indexed to, uint256 amount, uint256 reserveAfter);
+    event BadDebtRealised(
+        address indexed borrower,
+        address indexed asset,
+        uint256 shortfall,
+        uint256 fromReserve,
+        uint256 socialised
+    );
     event RiskLimitsSet(uint256 globalDebtCeiling, uint256 minPositionDebt, uint256 minLiquidityBuffer);
     event PriceGuardSet(
         address indexed asset,
@@ -278,6 +309,34 @@ contract SafixPool is Guardable {
         config.priceUsd1e18 = priceUsd1e18;
         priceUpdatedAt[asset] = block.timestamp;
         emit AssetConfigured(asset, maxLtvBps, liqThresholdBps);
+    }
+
+    /// @notice Share of each origination fee that goes to the reserve instead of protocol fees.
+    ///         Capped at half: past that the protocol stops funding itself, and a reserve nobody can
+    ///         afford to operate around is not risk management.
+    function setReserveFeeShare(uint16 bps) external onlyOwner {
+        require(bps <= 5_000, "share too high");
+        reserveFeeShareBps = bps;
+        emit ReserveFeeShareSet(bps);
+    }
+
+    /// @notice Adds stable to the reserve from outside the fee stream. Open to anyone, because a
+    ///         protocol seeding its own buffer at launch, or a partner topping it up, should not
+    ///         need a privileged path.
+    function fundReserve(uint256 amount) external nonReentrant {
+        require(amount > 0, "zero");
+        reserve += amount;
+        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        emit ReserveFunded(msg.sender, amount, reserve);
+    }
+
+    /// @notice Takes stable back out of the reserve. Owner only, and it cannot reach further than
+    ///         the reserve holds, so this can never be a path into provider deposits.
+    function withdrawReserve(address to, uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0 && amount <= reserve, "bad amount");
+        reserve -= amount;
+        require(stable.transfer(to, amount), "transfer failed");
+        emit ReserveWithdrawn(to, amount, reserve);
     }
 
     /// @notice Bounds how much of the pool one asset may account for. Set independently of
@@ -516,9 +575,12 @@ contract SafixPool is Guardable {
         return pendingGains[provider][asset] + _gainSince(record, asset);
     }
 
+    /// @notice Stable that can actually be lent or withdrawn: the balance less the two claims on it
+    ///         that belong to neither providers nor borrowers.
     function availableLiquidity() public view returns (uint256) {
         uint256 balance = stable.balanceOf(address(this));
-        return balance > protocolFees ? balance - protocolFees : 0;
+        uint256 committed = protocolFees + reserve;
+        return balance > committed ? balance - committed : 0;
     }
 
     function _realize(address provider) internal {
@@ -631,7 +693,10 @@ contract SafixPool is Guardable {
         position.totalDrawn += amount;
         assetDebt[asset] += debtAdded;
         totalDebt += debtAdded;
-        protocolFees += fee;
+        // The reserve is funded from the same event that creates the risk it covers.
+        uint256 toReserve = (fee * reserveFeeShareBps) / BPS;
+        reserve += toReserve;
+        protocolFees += fee - toReserve;
         require(stable.transfer(msg.sender, amount), "transfer failed");
         emit Drawn(msg.sender, asset, amount, fee);
     }
@@ -677,6 +742,75 @@ contract SafixPool is Guardable {
     ///         this answers false: no keeper is told to seize collateral on a number nobody could
     ///         have reacted to. It never reverts, so a keeper scanning positions is not knocked over
     ///         by one unusable feed.
+    /// @notice Clears a position whose remaining collateral is worth less than the gas to liquidate
+    ///         it. Nobody will take it: the keeper incentive is a share of something close to
+    ///         nothing, so the debt would sit on the book forever and the collateral with it.
+    ///
+    /// The pool takes the collateral, cancels the debt, and books the gap through the same reserve
+    /// and socialisation path a liquidation uses. No keeper incentive is carved out, because there
+    /// is no keeper and nothing worth paying one from.
+    ///
+    /// Owner only, and only for a position that is both liquidatable and genuinely dust, so this
+    /// can never be a way to close a healthy loan. It needs `minPositionDebt` set, since that is
+    /// what defines dust.
+    function absorbBadDebt(address borrower, address asset) external onlyOwner nonReentrant {
+        require(minPositionDebt > 0, "no dust threshold");
+        uint256 price1e18 = _requireUsablePrice(asset);
+        require(isLiquidatable(borrower, asset), "healthy");
+
+        Position storage position = positions[borrower][asset];
+        uint256 collateral = position.collateral;
+        uint256 debt = position.debt;
+        uint256 collateralValue = (collateral * price1e18) / 1e30;
+        require(collateralValue < minPositionDebt, "not dust");
+        require(totalDeposits > debt, "pool too small");
+
+        position.collateral = 0;
+        position.debt = 0;
+        position.totalDrawn = 0;
+        assetDebt[asset] -= debt;
+        totalDebt -= debt;
+        assetCollateral[asset] -= collateral;
+
+        uint256 lpLoss = _settleShortfall(borrower, asset, debt, collateralValue);
+
+        if (collateral > 0) {
+            sumS[currentScale][asset] += (collateral * productP) / totalDeposits;
+        }
+        uint256 newP = (productP * (totalDeposits - lpLoss)) / totalDeposits;
+        while (newP < P_MIN) {
+            currentScale += 1;
+            newP *= SCALE_FACTOR;
+        }
+        productP = newP;
+        totalDeposits -= lpLoss;
+
+        emit Liquidated(borrower, asset, msg.sender, debt, collateral);
+    }
+
+    /// @dev Places the gap between debt cancelled and value received. The reserve takes it first;
+    ///      whatever the reserve cannot cover is socialised across providers, and recorded rather
+    ///      than absorbed silently. Returns what the providers actually lose, which is the number
+    ///      the product-sum accounting is then advanced by.
+    function _settleShortfall(address borrower, address asset, uint256 offset, uint256 received)
+        internal
+        returns (uint256 lpLoss)
+    {
+        if (received >= offset) return offset;
+
+        uint256 shortfall = offset - received;
+        uint256 fromReserve = shortfall > reserve ? reserve : shortfall;
+        uint256 socialised = shortfall - fromReserve;
+
+        reserve -= fromReserve;
+        badDebt += socialised;
+        emit BadDebtRealised(borrower, asset, shortfall, fromReserve, socialised);
+
+        // Providers carry the offset less whatever the reserve just paid on their behalf. Total
+        // claims fall by exactly `offset` either way, so the pool's books stay balanced.
+        return offset - fromReserve;
+    }
+
     function isLiquidatable(address borrower, address asset) public view returns (bool) {
         Position storage position = positions[borrower][asset];
         if (position.debt == 0) return false;
@@ -689,7 +823,7 @@ contract SafixPool is Guardable {
     function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
         require(!isPaused(PAUSE_LIQUIDATIONS), "liquidations paused");
         // Reverts with the reason the price is unusable, rather than the misleading "healthy".
-        _requireUsablePrice(asset);
+        uint256 price1e18 = _requireUsablePrice(asset);
         require(isLiquidatable(borrower, asset), "healthy");
         Position storage position = positions[borrower][asset];
         uint256 offset = debtAmount >= position.debt ? position.debt : debtAmount;
@@ -712,14 +846,21 @@ contract SafixPool is Guardable {
         assetDebt[asset] -= offset;
         totalDebt -= offset;
         assetCollateral[asset] -= seized;
+
+        // What the pool actually receives for the debt it cancels. When a price gaps through the
+        // threshold this is worth less than the debt, and the difference is a real loss that has to
+        // land somewhere named rather than quietly diluting every provider.
+        uint256 received = (poolShare * price1e18) / 1e30;
+        uint256 lpLoss = _settleShortfall(borrower, asset, offset, received);
+
         sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
-        uint256 newP = (productP * (totalDeposits - offset)) / totalDeposits;
+        uint256 newP = (productP * (totalDeposits - lpLoss)) / totalDeposits;
         while (newP < P_MIN) {
             currentScale += 1;
             newP *= SCALE_FACTOR;
         }
         productP = newP;
-        totalDeposits -= offset;
+        totalDeposits -= lpLoss;
         if (incentive > 0) {
             require(IERC20(asset).transfer(msg.sender, incentive), "transfer failed");
         }

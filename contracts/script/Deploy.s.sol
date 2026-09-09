@@ -44,6 +44,10 @@ contract Deploy is Script {
         // Global ceiling 50% of pool size, minimum position 500 stable, liquidity buffer 10%.
         pool.setRiskLimits(125_000e6, 500e6, 25_000e6);
 
+        // A quarter of every origination fee funds the reserve that absorbs bad debt before any of
+        // it reaches providers. See docs/risk-parameters.md for why a quarter.
+        pool.setReserveFeeShare(2_500);
+
         // The L2 sequencer uptime feed is deliberately left unset: Chainlink has not published one
         // for Robinhood Chain. setSequencerUptimeFeed wires it the day one exists, with no redeploy.
 
@@ -69,6 +73,9 @@ contract Deploy is Script {
 
         usdc.approve(address(pool), type(uint256).max);
         pool.deposit(250_000e6);
+        // Seed the reserve so the first gap-down does not land on providers before fees have had
+        // time to build it. 2% of pool size, per docs/risk-parameters.md.
+        pool.fundReserve(5_000e6);
 
         vm.stopBroadcast();
 
