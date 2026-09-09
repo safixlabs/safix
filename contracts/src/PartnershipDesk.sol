@@ -15,7 +15,10 @@ contract PartnershipDesk is Guardable {
         Funding,
         Active,
         Settled,
-        Cancelled
+        Cancelled,
+        /// @notice The operator went past the reporting deadline without settling. Funders recover
+        ///         whatever was returned; the operator's profit share is forfeit.
+        Defaulted
     }
 
     struct Partnership {
@@ -27,6 +30,9 @@ contract PartnershipDesk is Guardable {
         uint256 funded;
         uint256 returned;
         bool operatorPaid;
+        /// @dev Latest the partnership may be settled by. Appended after the original fields, so a
+        ///      reader built against the older shape still decodes those correctly.
+        uint64 reportingDeadline;
     }
 
     uint256 private constant BPS = 10_000;
@@ -63,6 +69,7 @@ contract PartnershipDesk is Guardable {
     event Cancelled(uint256 indexed id);
     event ReturnReported(uint256 indexed id, uint256 amount, uint256 totalReturned);
     event Settled(uint256 indexed id);
+    event Defaulted(uint256 indexed id, uint256 returned);
     event FunderClaimed(uint256 indexed id, address indexed funder, uint256 amount);
     event OperatorClaimed(uint256 indexed id, address indexed operator, uint256 amount);
 
@@ -133,11 +140,15 @@ contract PartnershipDesk is Guardable {
         address operator,
         uint16 operatorShareBps,
         uint256 fundingGoal,
-        uint64 fundingDeadline
+        uint64 fundingDeadline,
+        uint64 reportingDeadline
     ) external onlyOwner returns (uint256 id) {
         require(operator != address(0), "no operator");
         require(operatorShareBps <= BPS, "bad share");
         require(fundingGoal > 0, "no goal");
+        // Capital that goes out has to have a date by which it comes back, or a silent operator
+        // leaves the funders with no way to recover anything at all.
+        require(reportingDeadline > fundingDeadline, "reporting before funding ends");
         id = partnershipCount++;
         partnerships[id] = Partnership({
             operator: operator,
@@ -147,7 +158,8 @@ contract PartnershipDesk is Guardable {
             fundingGoal: fundingGoal,
             funded: 0,
             returned: 0,
-            operatorPaid: false
+            operatorPaid: false,
+            reportingDeadline: reportingDeadline
         });
         emit PartnershipCreated(id, operator, operatorShareBps, fundingGoal, fundingDeadline);
     }
@@ -182,7 +194,12 @@ contract PartnershipDesk is Guardable {
 
     function reportReturn(uint256 id, uint256 amount) external nonReentrant {
         Partnership storage partnership = partnerships[id];
-        require(partnership.status == Status.Active, "not active");
+        // Still open after a default: an operator making good afterwards is strictly better for the
+        // funders than one who stops because the door closed.
+        require(
+            partnership.status == Status.Active || partnership.status == Status.Defaulted,
+            "not active"
+        );
         require(msg.sender == partnership.operator, "not operator");
         require(amount > 0, "zero");
         partnership.returned += amount;
@@ -200,6 +217,25 @@ contract PartnershipDesk is Guardable {
         emit Settled(id);
     }
 
+    /// @notice Marks a partnership defaulted once its reporting deadline has passed without a
+    ///         settlement. Callable by anyone: the funders' recovery must not depend on the owner
+    ///         being available, and the condition is a date that either has passed or has not.
+    ///
+    /// Whatever the operator returned is distributed to funders pro rata. The operator's profit
+    /// share is forfeit — a partnership that had to be declared in default did not earn one.
+    function declareDefault(uint256 id) external {
+        Partnership storage partnership = partnerships[id];
+        require(partnership.status == Status.Active, "not active");
+        require(block.timestamp > partnership.reportingDeadline, "before deadline");
+        // Capital that came back is not a default, however slow the settlement is. Otherwise an
+        // operator who performed loses their share to whoever calls this a second past the
+        // deadline, since settle refuses a defaulted partnership. A partial return still defaults,
+        // so this cannot be used to block a recovery.
+        require(partnership.returned < partnership.funded, "capital returned");
+        partnership.status = Status.Defaulted;
+        emit Defaulted(id, partnership.returned);
+    }
+
     function profitOf(uint256 id) public view returns (uint256) {
         Partnership storage partnership = partnerships[id];
         return partnership.returned > partnership.funded ? partnership.returned - partnership.funded : 0;
@@ -215,20 +251,28 @@ contract PartnershipDesk is Guardable {
         uint256 contribution = contributions[id][funder];
         if (contribution == 0 || claimed[id][funder]) return 0;
         if (partnership.status == Status.Cancelled) return contribution;
-        if (partnership.status != Status.Settled || partnership.funded == 0) return 0;
+        if (partnership.funded == 0) return 0;
+        if (partnership.status == Status.Defaulted) {
+            // No operator share: everything recovered goes back to the funders.
+            return (partnership.returned * contribution) / partnership.funded;
+        }
+        if (partnership.status != Status.Settled) return 0;
         uint256 funderPool = partnership.returned - operatorShareOf(id);
         return (funderPool * contribution) / partnership.funded;
     }
 
     function claim(uint256 id) external nonReentrant {
         uint256 payout = funderPayoutOf(id, msg.sender);
+        Status status = partnerships[id].status;
         require(
-            partnerships[id].status == Status.Settled || partnerships[id].status == Status.Cancelled,
+            status == Status.Settled || status == Status.Cancelled || status == Status.Defaulted,
             "not claimable"
         );
         require(contributions[id][msg.sender] > 0 && !claimed[id][msg.sender], "nothing to claim");
-        claimed[id][msg.sender] = true;
+        // Only a claim that pays is spent. An operator can still make good after a default, so a
+        // funder who asked while there was nothing to take must not be locked out of what arrives.
         if (payout > 0) {
+            claimed[id][msg.sender] = true;
             require(stable.transfer(msg.sender, payout), "transfer failed");
         }
         emit FunderClaimed(id, msg.sender, payout);

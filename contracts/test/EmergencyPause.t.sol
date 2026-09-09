@@ -332,7 +332,7 @@ contract EmergencyPauseTest is Test {
     // --------------------------------------------------------------------------------------
 
     function _openPartnership() internal returns (uint256 id) {
-        id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 30 days));
+        id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 30 days), uint64(block.timestamp + 200 days));
     }
 
     function testFundingPausesAndClaimsDoNot() public {

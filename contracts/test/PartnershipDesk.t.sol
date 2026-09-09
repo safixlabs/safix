@@ -30,7 +30,7 @@ contract PartnershipDeskTest is Test {
     }
 
     function _createAndFund() internal returns (uint256 id) {
-        id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 7 days));
+        id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 7 days), uint64(block.timestamp + 180 days));
         vm.prank(funderA);
         desk.fund(id, 60_000e6);
         vm.prank(funderB);
@@ -147,7 +147,7 @@ contract PartnershipDeskTest is Test {
     }
 
     function testFundAfterDeadlineReverts() public {
-        uint256 id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 1 days));
+        uint256 id = desk.createPartnership(operator, 4000, 100_000e6, uint64(block.timestamp + 1 days), uint64(block.timestamp + 180 days));
         vm.warp(block.timestamp + 2 days);
         vm.prank(funderA);
         vm.expectRevert(bytes("past deadline"));

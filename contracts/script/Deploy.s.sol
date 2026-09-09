@@ -91,9 +91,15 @@ contract Deploy is Script {
             desk.setGuardian(guardian);
         }
 
+        // The auditor gates settlement on the desk, and setAuditor moves behind the timelock the
+        // moment one is wired. Appointed here, before that, for the same reason the risk parameters
+        // are: a deployment has to arrive configured, not configurable.
+        address auditor = vm.envOr("AUDITOR", address(0));
+        if (auditor != address(0)) desk.setAuditor(auditor);
+
         address deployer = vm.addr(deployerKey);
         registry.attest(deployer, 0x1f, 0);
-        desk.createPartnership(deployer, 4000, 100_000e6, uint64(block.timestamp + 30 days));
+        desk.createPartnership(deployer, 4000, 100_000e6, uint64(block.timestamp + 30 days), uint64(block.timestamp + 200 days));
         usdc.mint(deployer, 1_000_000e6);
         tbill.mint(deployer, 10_000e18);
         bnvda.mint(deployer, 1_000e18);
@@ -141,5 +147,6 @@ contract Deploy is Script {
         console.log("multisig", multisig);
         console.log("timelock", timelockAddress);
         console.log("realAsset", realAsset);
+        console.log("auditor", auditor);
     }
 }
