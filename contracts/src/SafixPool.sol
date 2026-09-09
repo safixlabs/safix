@@ -369,10 +369,15 @@ contract SafixPool {
         require(offset > 0, "zero");
         require(totalDeposits > offset, "pool too small");
         uint256 seized = (position.collateral * offset) / position.debt;
+        // The redemption fee at close is charged on totalDrawn, so the share of the position the
+        // liquidation takes has to leave with it. Without this, draws that were already settled by
+        // a liquidation would be charged again the next time the borrower closes.
+        uint256 drawnOffset = (position.totalDrawn * offset) / position.debt;
         uint256 incentive = (seized * liquidationIncentiveBps) / BPS;
         uint256 poolShare = seized - incentive;
         position.debt -= offset;
         position.collateral -= seized;
+        position.totalDrawn -= drawnOffset;
         sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
         uint256 newP = (productP * (totalDeposits - offset)) / totalDeposits;
         while (newP < P_MIN) {

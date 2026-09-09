@@ -210,6 +210,58 @@ contract SafixPoolTest is Test {
         vm.stopPrank();
     }
 
+    function testFullLiquidationClearsTotalDrawn() public {
+        _seedPool(50_000e6);
+        _openPosition(100e18, 5_000e6);
+        pool.setPrice(address(tbill), 55e18);
+
+        vm.prank(keeper);
+        pool.liquidate(borrower, address(tbill), type(uint256).max);
+
+        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        assertEq(collateral, 0);
+        assertEq(debt, 0);
+        // Nothing of the position survives, so nothing is left to charge a redemption fee on.
+        assertEq(totalDrawn, 0);
+    }
+
+    function testPartialLiquidationReducesTotalDrawnProRata() public {
+        _seedPool(50_000e6);
+        _openPosition(100e18, 5_000e6);
+        pool.setPrice(address(tbill), 55e18);
+
+        (, uint256 debtBefore, uint256 drawnBefore) = pool.positions(borrower, address(tbill));
+        uint256 offset = debtBefore / 4;
+
+        vm.prank(keeper);
+        pool.liquidate(borrower, address(tbill), offset);
+
+        (, uint256 debtAfter, uint256 drawnAfter) = pool.positions(borrower, address(tbill));
+        assertEq(debtAfter, debtBefore - offset);
+        // Drawn principal falls by the same share of the position the liquidation took.
+        assertEq(drawnAfter, drawnBefore - (drawnBefore * offset) / debtBefore);
+    }
+
+    function testRedemptionFeeIgnoresLiquidatedDraws() public {
+        _seedPool(50_000e6);
+        _openPosition(100e18, 5_000e6);
+        pool.setPrice(address(tbill), 55e18);
+
+        vm.prank(keeper);
+        pool.liquidate(borrower, address(tbill), type(uint256).max);
+        pool.setPrice(address(tbill), 100e18);
+        uint256 feesAfterLiquidation = pool.protocolFees();
+
+        // A fresh position on the same asset must not inherit the liquidated position's draws.
+        _openPosition(100e18, 1_000e6);
+        vm.prank(borrower);
+        pool.closePosition(address(tbill));
+
+        uint256 originationFee = (uint256(1_000e6) * pool.originationFeeBps()) / 10_000;
+        uint256 redemptionFee = (uint256(1_000e6) * pool.redemptionFeeBps()) / 10_000;
+        assertEq(pool.protocolFees() - feesAfterLiquidation, originationFee + redemptionFee);
+    }
+
     function testCollectProtocolFees() public {
         _seedPool(50_000e6);
         _openPosition(100e18, 5_000e6);

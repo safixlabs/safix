@@ -50,19 +50,55 @@ const deployBlock = Math.min(
 )
 
 const appDir = process.env.APP_DIR ?? resolve(repoRoot, "..", "safix-app")
-const envLines = [
-  `NEXT_PUBLIC_CHAIN=${chain.name}`,
-  "NEXT_PUBLIC_RPC_OVERRIDE=",
-  `NEXT_PUBLIC_POOL_ADDRESS=${pool}`,
-  `NEXT_PUBLIC_USDG_ADDRESS=${stable}`,
-  `NEXT_PUBLIC_REGISTRY_ADDRESS=${registry ?? ""}`,
-  `NEXT_PUBLIC_DESK_ADDRESS=${desk ?? ""}`,
-  `NEXT_PUBLIC_ASSET_TBILL=${bySymbol.tBILL ?? ""}`,
-  `NEXT_PUBLIC_ASSET_BNVDA=${bySymbol.bNVDA ?? ""}`,
-  `NEXT_PUBLIC_ASSET_TGOLD=${bySymbol.tGOLD ?? ""}`,
-  ""
-]
 const envPath = join(appDir, ".env.local")
+
+// Only these come from the deployment. Everything else already in .env.local belongs to whoever
+// runs the app -- the WalletConnect project, a dedicated RPC, error reporting, analytics -- and
+// rewriting the file from scratch would silently throw it away.
+const derived = {
+  NEXT_PUBLIC_CHAIN: chain.name,
+  NEXT_PUBLIC_POOL_ADDRESS: pool,
+  NEXT_PUBLIC_USDG_ADDRESS: stable,
+  NEXT_PUBLIC_REGISTRY_ADDRESS: registry ?? "",
+  NEXT_PUBLIC_DESK_ADDRESS: desk ?? "",
+  NEXT_PUBLIC_ASSET_TBILL: bySymbol.tBILL ?? "",
+  NEXT_PUBLIC_ASSET_BNVDA: bySymbol.bNVDA ?? "",
+  NEXT_PUBLIC_ASSET_TGOLD: bySymbol.tGOLD ?? ""
+}
+
+let existingLines = []
+try {
+  existingLines = readFileSync(envPath, "utf8").split("\n")
+} catch {
+  // No file yet: the derived keys below become the whole of it.
+}
+
+const written = new Set()
+const preserved = []
+const envLines = []
+for (const line of existingLines) {
+  const key = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1]
+  if (key === undefined) {
+    envLines.push(line)
+  } else if (key in derived) {
+    envLines.push(`${key}=${derived[key]}`)
+    written.add(key)
+  } else {
+    envLines.push(line)
+    preserved.push(key)
+  }
+}
+// Trailing blank lines would push new keys past the end of the file.
+while (envLines.length > 0 && envLines[envLines.length - 1].trim() === "") envLines.pop()
+for (const [key, value] of Object.entries(derived)) {
+  if (!written.has(key)) envLines.push(`${key}=${value}`)
+}
+// The app treats an unset override as "use the chain's default RPC".
+if (!existingLines.some(line => line.startsWith("NEXT_PUBLIC_RPC_OVERRIDE="))) {
+  envLines.push("NEXT_PUBLIC_RPC_OVERRIDE=")
+}
+envLines.push("")
+
 writeFileSync(envPath, envLines.join("\n"))
 
 const keeperConfig = {
@@ -79,4 +115,5 @@ writeFileSync(keeperPath, `${JSON.stringify(keeperConfig, null, 2)}\n`)
 console.log(`chain ${chain.name} (${chain.id})`)
 console.log(`pool ${pool}`)
 console.log(`wrote ${envPath}`)
+if (preserved.length > 0) console.log(`kept ${preserved.length} existing key(s): ${preserved.join(", ")}`)
 console.log(`wrote ${keeperPath}`)
