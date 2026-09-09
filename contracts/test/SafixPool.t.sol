@@ -157,7 +157,7 @@ contract SafixPoolTest is Test {
 
     function testStalePriceBlocksDrawAndLiquidate() public {
         _seedPool(50_000e6);
-        pool.setMaxPriceAge(1 hours);
+        pool.setPriceGuard(address(tbill), 1 hours, 0, 0, 0);
 
         vm.startPrank(borrower);
         pool.lockCollateral(address(tbill), 100e18);

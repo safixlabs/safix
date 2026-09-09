@@ -47,6 +47,14 @@ const log = (message: string) => {
   console.log(`[${new Date().toISOString()}] ${message}`)
 }
 
+/// Pulls the revert reason out of a viem error, which carries it a few lines into a long message.
+/// Without this the log says a call reverted but never says why, which is the only useful part.
+const reason = (error: unknown) => {
+  const text = error instanceof Error ? error.message : String(error)
+  const reverted = text.match(/reverted with the following reason:\s*\n?\s*(.+)/)
+  return (reverted?.[1] ?? text.split("\n")[0]).trim()
+}
+
 async function walletClient() {
   const chainId = await publicClient.getChainId()
   const chain = defineChain({
@@ -65,21 +73,28 @@ async function pushPrices() {
   for (const [assetRaw, price] of entries) {
     const asset = getAddress(assetRaw)
     const target = toPrice1e18(price)
-    const [current] = await publicClient.readContract({
-      abi: poolAbi,
-      address: pool,
-      functionName: "currentPrice",
-      args: [asset]
-    })
-    if (current === target) continue
-    const hash = await wallet.writeContract({
-      abi: poolAbi,
-      address: pool,
-      functionName: "setPrice",
-      args: [asset, target]
-    })
-    await publicClient.waitForTransactionReceipt({ hash })
-    log(`price set ${asset} -> ${price} (${hash})`)
+    try {
+      const [current] = await publicClient.readContract({
+        abi: poolAbi,
+        address: pool,
+        functionName: "currentPrice",
+        args: [asset]
+      })
+      if (current === target) continue
+      const hash = await wallet.writeContract({
+        abi: poolAbi,
+        address: pool,
+        functionName: "setPrice",
+        args: [asset, target]
+      })
+      await publicClient.waitForTransactionReceipt({ hash })
+      log(`price set ${asset} -> ${price} (${hash})`)
+    } catch (error) {
+      // The pool refuses a price outside the asset's band or one that moves too far in a single
+      // update. That is the guard doing its job, and it says nothing about the other assets, so
+      // the rest of the loop continues.
+      log(`price push failed for ${asset}: ${reason(error)}`)
+    }
   }
 }
 
@@ -105,32 +120,48 @@ async function liquidateUnhealthy() {
   log(`scanning ${pairs.length} position(s)`)
   const wallet = await walletClient()
   for (const { borrower, asset } of pairs) {
-    const liquidatable = await publicClient.readContract({
-      abi: poolAbi,
-      address: pool,
-      functionName: "isLiquidatable",
-      args: [borrower, asset]
-    })
-    if (!liquidatable) continue
-    const [, debt] = await publicClient.readContract({
-      abi: poolAbi,
-      address: pool,
-      functionName: "positions",
-      args: [borrower, asset]
-    })
-    const hash = await wallet.writeContract({
-      abi: poolAbi,
-      address: pool,
-      functionName: "liquidate",
-      args: [borrower, asset, maxUint256]
-    })
-    await publicClient.waitForTransactionReceipt({ hash })
-    log(`liquidated ${borrower} on ${asset}, debt ${debt} (${hash})`)
+    try {
+      // isLiquidatable answers false, rather than reverting, whenever the pool will not act on the
+      // price: sequencer down or inside its grace window, stale, out of band, or a single-round
+      // jump. One unusable feed therefore skips its own positions and no others.
+      const liquidatable = await publicClient.readContract({
+        abi: poolAbi,
+        address: pool,
+        functionName: "isLiquidatable",
+        args: [borrower, asset]
+      })
+      if (!liquidatable) continue
+      const [, debt] = await publicClient.readContract({
+        abi: poolAbi,
+        address: pool,
+        functionName: "positions",
+        args: [borrower, asset]
+      })
+      const hash = await wallet.writeContract({
+        abi: poolAbi,
+        address: pool,
+        functionName: "liquidate",
+        args: [borrower, asset, maxUint256]
+      })
+      await publicClient.waitForTransactionReceipt({ hash })
+      log(`liquidated ${borrower} on ${asset}, debt ${debt} (${hash})`)
+    } catch (error) {
+      // Another keeper getting there first, or a position that stopped being liquidatable between
+      // the read and the send, must not cost the remaining positions their scan.
+      log(`liquidation failed for ${borrower} on ${asset}: ${reason(error)}`)
+    }
   }
 }
 
 async function scanOnce() {
-  await pushPrices()
+  // Liquidation is the pool's only defence and must not depend on the price push succeeding.
+  // A pool-side rejection, a feed that will not answer or an RPC hiccup while pushing prices
+  // is logged and stepped over, so the scan below still runs this pass.
+  try {
+    await pushPrices()
+  } catch (error) {
+    log(`price push failed: ${reason(error)}`)
+  }
   await liquidateUnhealthy()
 }
 
@@ -140,7 +171,7 @@ async function watch() {
     try {
       await scanOnce()
     } catch (error) {
-      log(`scan failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`)
+      log(`scan failed: ${reason(error)}`)
     }
     await new Promise(resolve => setTimeout(resolve, interval))
   }

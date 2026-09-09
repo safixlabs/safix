@@ -13,6 +13,32 @@ contract SafixPool {
         uint256 priceUsd1e18;
     }
 
+    /// @notice Per-asset limits a price has to satisfy before the pool will act on it. Each field is
+    ///         off when zero, so an asset with no guard behaves as it did before one was configured.
+    /// @param maxPriceAge     seconds a price may be old, set to the feed's own heartbeat
+    /// @param maxDeviationBps how far a price may move from the previous update
+    /// @param minPrice1e18    lower sanity bound
+    /// @param maxPrice1e18    upper sanity bound
+    struct PriceGuard {
+        uint64 maxPriceAge;
+        uint16 maxDeviationBps;
+        uint256 minPrice1e18;
+        uint256 maxPrice1e18;
+    }
+
+    /// @notice Why a price may not be acted on. Callers that must not revert read this instead.
+    enum PriceStatus {
+        Ok,
+        AssetDisabled,
+        SequencerDown,
+        SequencerGracePeriod,
+        FeedUnavailable,
+        Stale,
+        BelowBand,
+        AboveBand,
+        DeviationTooLarge
+    }
+
     struct Position {
         uint256 collateral;
         uint256 debt;
@@ -39,11 +65,21 @@ contract SafixPool {
     uint16 public originationFeeBps = 50;
     uint16 public redemptionFeeBps = 30;
     uint16 public liquidationIncentiveBps = 50;
-    uint256 public maxPriceAge;
     uint256 public protocolFees;
     mapping(address => uint256) public priceUpdatedAt;
     mapping(address => address) public priceFeeds;
     mapping(address => uint8) public priceFeedDecimals;
+    mapping(address => PriceGuard) public priceGuards;
+
+    /// @notice Chainlink L2 sequencer uptime feed. Robinhood Chain is an Orbit rollup, so a price
+    ///         feed can keep returning a recent-looking answer while the sequencer is down or has
+    ///         only just come back, which is exactly when a liquidation would fire on a price
+    ///         nobody had a chance to react to. Zero means no feed is wired yet.
+    address public sequencerUptimeFeed;
+
+    /// @notice How long after the sequencer comes back before prices are trusted again, giving
+    ///         borrowers a window to repay or add collateral before liquidations resume.
+    uint256 public sequencerGracePeriod;
 
     address[] public assetList;
     mapping(address => AssetConfig) public assetConfig;
@@ -81,8 +117,15 @@ contract SafixPool {
     event PriceFeedSet(address indexed asset, address indexed feed);
     event PassportRegistrySet(address indexed registry);
     event LiquidationIncentiveSet(uint16 bps);
-    event MaxPriceAgeSet(uint256 seconds_);
     event FeesSet(uint16 originationBps, uint16 redemptionBps);
+    event SequencerUptimeFeedSet(address indexed feed, uint256 gracePeriod);
+    event PriceGuardSet(
+        address indexed asset,
+        uint64 maxPriceAge,
+        uint16 maxDeviationBps,
+        uint256 minPrice1e18,
+        uint256 maxPrice1e18
+    );
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -130,9 +173,33 @@ contract SafixPool {
         emit LiquidationIncentiveSet(bps);
     }
 
-    function setMaxPriceAge(uint256 seconds_) external onlyOwner {
-        maxPriceAge = seconds_;
-        emit MaxPriceAgeSet(seconds_);
+    /// @notice Wires the L2 sequencer uptime feed. Passing the zero address removes it, which is the
+    ///         state a chain without a published feed starts in.
+    function setSequencerUptimeFeed(address feed, uint256 gracePeriod) external onlyOwner {
+        sequencerUptimeFeed = feed;
+        sequencerGracePeriod = gracePeriod;
+        emit SequencerUptimeFeedSet(feed, gracePeriod);
+    }
+
+    /// @notice Sets the limits a price for this asset has to satisfy. Age is per asset rather than
+    ///         global because each feed has its own heartbeat; a treasury feed that updates daily
+    ///         and an equity feed that updates hourly cannot share one deadline.
+    function setPriceGuard(
+        address asset,
+        uint64 maxPriceAge,
+        uint16 maxDeviationBps,
+        uint256 minPrice1e18,
+        uint256 maxPrice1e18
+    ) external onlyOwner {
+        require(maxDeviationBps <= BPS, "bad deviation");
+        require(maxPrice1e18 == 0 || minPrice1e18 <= maxPrice1e18, "bad band");
+        priceGuards[asset] = PriceGuard({
+            maxPriceAge: maxPriceAge,
+            maxDeviationBps: maxDeviationBps,
+            minPrice1e18: minPrice1e18,
+            maxPrice1e18: maxPrice1e18
+        });
+        emit PriceGuardSet(asset, maxPriceAge, maxDeviationBps, minPrice1e18, maxPrice1e18);
     }
 
     function configureAsset(
@@ -149,9 +216,20 @@ contract SafixPool {
         emit AssetConfigured(asset, maxLtvBps, liqThresholdBps);
     }
 
+    /// @notice Manual price for an asset without a feed. The same sanity bounds a feed answer has to
+    ///         clear are enforced here, so a mistaken or compromised updater cannot post a price the
+    ///         pool would refuse from an oracle.
     function setPrice(address asset, uint256 priceUsd1e18) external {
         require(msg.sender == owner || msg.sender == priceUpdater, "not price updater");
         require(assetConfig[asset].enabled, "asset off");
+        PriceGuard storage guard = priceGuards[asset];
+        if (guard.minPrice1e18 != 0) require(priceUsd1e18 >= guard.minPrice1e18, "price below band");
+        if (guard.maxPrice1e18 != 0) require(priceUsd1e18 <= guard.maxPrice1e18, "price above band");
+        uint256 previous = assetConfig[asset].priceUsd1e18;
+        if (guard.maxDeviationBps != 0 && previous != 0) {
+            uint256 movement = priceUsd1e18 > previous ? priceUsd1e18 - previous : previous - priceUsd1e18;
+            require((movement * BPS) / previous <= guard.maxDeviationBps, "price jump");
+        }
         assetConfig[asset].priceUsd1e18 = priceUsd1e18;
         priceUpdatedAt[asset] = block.timestamp;
         emit PriceSet(asset, priceUsd1e18);
@@ -170,22 +248,115 @@ contract SafixPool {
         emit PriceFeedSet(asset, feed);
     }
 
-    function currentPrice(address asset) public view returns (uint256 price1e18, uint256 updatedAt) {
+    /// @dev Reads the raw price without judging it. Never reverts: a feed that is unreachable or
+    ///      answering nonsense comes back as not available, so view callers keep working.
+    function _readPrice(address asset)
+        internal
+        view
+        returns (bool available, uint256 price1e18, uint256 updatedAt, uint80 roundId)
+    {
         address feed = priceFeeds[asset];
         if (feed == address(0)) {
-            return (assetConfig[asset].priceUsd1e18, priceUpdatedAt[asset]);
+            uint256 manual = assetConfig[asset].priceUsd1e18;
+            return (manual > 0, manual, priceUpdatedAt[asset], 0);
         }
-        (, int256 answer,, uint256 feedUpdatedAt,) = IAggregatorV3(feed).latestRoundData();
-        require(answer > 0, "bad feed answer");
-        require(feedUpdatedAt > 0, "bad feed round");
-        price1e18 = uint256(answer) * 10 ** (18 - priceFeedDecimals[asset]);
-        updatedAt = feedUpdatedAt;
+        try IAggregatorV3(feed).latestRoundData() returns (
+            uint80 id, int256 answer, uint256, uint256 feedUpdatedAt, uint80
+        ) {
+            if (answer <= 0 || feedUpdatedAt == 0) return (false, 0, 0, 0);
+            return (true, uint256(answer) * 10 ** (18 - priceFeedDecimals[asset]), feedUpdatedAt, id);
+        } catch {
+            return (false, 0, 0, 0);
+        }
     }
 
-    function _requireFreshPrice(address asset) internal view {
-        if (maxPriceAge == 0) return;
-        (, uint256 updatedAt) = currentPrice(asset);
-        require(block.timestamp - updatedAt <= maxPriceAge, "stale price");
+    /// @dev True when the sequencer is up and has been up for longer than the grace period. With no
+    ///      feed wired there is nothing to check, so pricing proceeds as it did before.
+    function _sequencerStatus() internal view returns (PriceStatus) {
+        address feed = sequencerUptimeFeed;
+        if (feed == address(0)) return PriceStatus.Ok;
+        try IAggregatorV3(feed).latestRoundData() returns (uint80, int256 answer, uint256 startedAt, uint256, uint80) {
+            // Chainlink's convention: 0 is up, 1 is down. startedAt is when that last changed, and a
+            // zero there means the feed has not started, which is not something to trust prices on.
+            if (answer != 0 || startedAt == 0 || startedAt > block.timestamp) return PriceStatus.SequencerDown;
+            if (block.timestamp - startedAt <= sequencerGracePeriod) return PriceStatus.SequencerGracePeriod;
+            return PriceStatus.Ok;
+        } catch {
+            return PriceStatus.SequencerDown;
+        }
+    }
+
+    /// @dev How far the latest feed answer moved from the one before it. Compares consecutive rounds
+    ///      rather than tracking a stored reference, so a quiet market never drifts into a rejection.
+    function _deviationExceeded(address asset, uint256 price1e18, uint80 roundId, uint16 maxDeviationBps)
+        internal
+        view
+        returns (bool)
+    {
+        if (maxDeviationBps == 0 || roundId == 0) return false;
+        address feed = priceFeeds[asset];
+        if (feed == address(0)) return false;
+        try IAggregatorV3(feed).getRoundData(roundId - 1) returns (
+            uint80, int256 answer, uint256, uint256 previousUpdatedAt, uint80
+        ) {
+            if (answer <= 0 || previousUpdatedAt == 0) return false;
+            uint256 previous = uint256(answer) * 10 ** (18 - priceFeedDecimals[asset]);
+            uint256 movement = price1e18 > previous ? price1e18 - previous : previous - price1e18;
+            return (movement * BPS) / previous > maxDeviationBps;
+        } catch {
+            // No previous round to compare against is not itself a reason to reject.
+            return false;
+        }
+    }
+
+    /// @notice Whether this asset's price can be acted on, and why not when it cannot. Reverts for
+    ///         nothing, so keepers, the interface and internal view callers can all ask safely.
+    function priceStatus(address asset)
+        public
+        view
+        returns (PriceStatus status, uint256 price1e18, uint256 updatedAt)
+    {
+        if (!assetConfig[asset].enabled) return (PriceStatus.AssetDisabled, 0, 0);
+
+        PriceStatus sequencer = _sequencerStatus();
+        if (sequencer != PriceStatus.Ok) return (sequencer, 0, 0);
+
+        (bool available, uint256 price, uint256 at, uint80 roundId) = _readPrice(asset);
+        if (!available) return (PriceStatus.FeedUnavailable, 0, 0);
+
+        PriceGuard storage guard = priceGuards[asset];
+        if (guard.minPrice1e18 != 0 && price < guard.minPrice1e18) return (PriceStatus.BelowBand, price, at);
+        if (guard.maxPrice1e18 != 0 && price > guard.maxPrice1e18) return (PriceStatus.AboveBand, price, at);
+        if (at > block.timestamp) return (PriceStatus.Stale, price, at);
+        if (guard.maxPriceAge != 0 && block.timestamp - at > guard.maxPriceAge) {
+            return (PriceStatus.Stale, price, at);
+        }
+        if (_deviationExceeded(asset, price, roundId, guard.maxDeviationBps)) {
+            return (PriceStatus.DeviationTooLarge, price, at);
+        }
+        return (PriceStatus.Ok, price, at);
+    }
+
+    /// @notice The price as reported, without the guards. Kept for readers that want the raw number.
+    function currentPrice(address asset) public view returns (uint256 price1e18, uint256 updatedAt) {
+        (bool available, uint256 price, uint256 at,) = _readPrice(asset);
+        require(available, "bad feed answer");
+        return (price, at);
+    }
+
+    /// @dev Every path that puts a borrower at risk on a price goes through here.
+    function _requireUsablePrice(address asset) internal view returns (uint256 price1e18) {
+        PriceStatus status;
+        (status, price1e18,) = priceStatus(asset);
+        if (status == PriceStatus.Ok) return price1e18;
+        if (status == PriceStatus.SequencerDown) revert("sequencer down");
+        if (status == PriceStatus.SequencerGracePeriod) revert("sequencer grace period");
+        if (status == PriceStatus.FeedUnavailable) revert("feed unavailable");
+        if (status == PriceStatus.Stale) revert("stale price");
+        if (status == PriceStatus.BelowBand) revert("price below band");
+        if (status == PriceStatus.AboveBand) revert("price above band");
+        if (status == PriceStatus.DeviationTooLarge) revert("price jump");
+        revert("asset off");
     }
 
     function collectProtocolFees(address to) external onlyOwner nonReentrant {
@@ -293,9 +464,11 @@ contract SafixPool {
         if (position.debt > 0 || position.totalDrawn > 0) {
             require(remaining > 0, "close position instead");
         }
+        // With no debt there is nothing a price could tell us, so an unusable feed never traps
+        // collateral. Only a withdrawal that has to be checked against a loan needs a price.
         if (position.debt > 0) {
-            _requireFreshPrice(asset);
-            uint256 remainingValue = collateralValueStable(asset, remaining);
+            uint256 price1e18 = _requireUsablePrice(asset);
+            uint256 remainingValue = (remaining * price1e18) / 1e30;
             require(
                 (remainingValue * assetConfig[asset].maxLtvBps) / BPS >= position.debt,
                 "would break ltv"
@@ -310,14 +483,14 @@ contract SafixPool {
         AssetConfig storage config = assetConfig[asset];
         require(config.enabled, "asset off");
         require(amount > 0, "zero");
-        _requireFreshPrice(asset);
+        uint256 price1e18 = _requireUsablePrice(asset);
         if (passportRegistry != address(0)) {
             require(IPassportRegistry(passportRegistry).isEligible(msg.sender), "passport required");
         }
         Position storage position = positions[msg.sender][asset];
         uint256 fee = (amount * originationFeeBps) / BPS;
         uint256 newDebt = position.debt + amount + fee;
-        uint256 value = collateralValueStable(asset, position.collateral);
+        uint256 value = (position.collateral * price1e18) / 1e30;
         require((value * config.maxLtvBps) / BPS >= newDebt, "exceeds ltv");
         require(amount <= availableLiquidity(), "illiquid");
         position.debt = newDebt;
@@ -354,15 +527,23 @@ contract SafixPool {
         emit PositionClosed(msg.sender, asset, redemptionFee);
     }
 
+    /// @notice A position is only liquidatable on a price the pool is willing to act on. While the
+    ///         sequencer is down or recovering, or the price is stale, out of band or a sudden jump,
+    ///         this answers false: no keeper is told to seize collateral on a number nobody could
+    ///         have reacted to. It never reverts, so a keeper scanning positions is not knocked over
+    ///         by one unusable feed.
     function isLiquidatable(address borrower, address asset) public view returns (bool) {
         Position storage position = positions[borrower][asset];
         if (position.debt == 0) return false;
-        uint256 value = collateralValueStable(asset, position.collateral);
+        (PriceStatus status, uint256 price1e18,) = priceStatus(asset);
+        if (status != PriceStatus.Ok) return false;
+        uint256 value = (position.collateral * price1e18) / 1e30;
         return (value * assetConfig[asset].liqThresholdBps) / BPS < position.debt;
     }
 
     function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
-        _requireFreshPrice(asset);
+        // Reverts with the reason the price is unusable, rather than the misleading "healthy".
+        _requireUsablePrice(asset);
         require(isLiquidatable(borrower, asset), "healthy");
         Position storage position = positions[borrower][asset];
         uint256 offset = debtAmount >= position.debt ? position.debt : debtAmount;

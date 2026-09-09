@@ -54,7 +54,7 @@ contract ChainlinkPricingTest is Test {
     }
 
     function testStaleFeedBlocksDraw() public {
-        pool.setMaxPriceAge(1 hours);
+        pool.setPriceGuard(address(bnvda), 1 hours, 0, 0, 0);
         feed.setAnswerAt(172.35e8, block.timestamp);
         vm.warp(block.timestamp + 2 hours);
 
@@ -66,8 +66,13 @@ contract ChainlinkPricingTest is Test {
     function testBadAnswerReverts() public {
         feed.setAnswer(0);
         vm.prank(borrower);
-        vm.expectRevert(bytes("bad feed answer"));
+        vm.expectRevert(bytes("feed unavailable"));
         pool.draw(address(bnvda), 1_000e6);
+
+        // The status view says the same thing without reverting, so a keeper can keep scanning.
+        (SafixPool.PriceStatus status,,) = pool.priceStatus(address(bnvda));
+        assertEq(uint256(status), uint256(SafixPool.PriceStatus.FeedUnavailable));
+        assertFalse(pool.isLiquidatable(borrower, address(bnvda)));
     }
 
     function testFeedDecimalsGuard() public {

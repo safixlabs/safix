@@ -43,6 +43,37 @@ contract Smoke is Script {
     IERC20 private stable;
     IERC20 private asset;
     address private assetAddress;
+    uint256 private priceSteps;
+
+    /// @dev Walks the manual price to a target without ever breaching the asset's own movement
+    ///      limit, so the oracle guards are respected rather than worked around. With no deviation
+    ///      guard configured this is a single write, exactly as before.
+    function _movePriceTo(uint256 target) private {
+        (, uint16 maxDeviationBps, uint256 minPrice1e18, uint256 maxPrice1e18) = pool.priceGuards(assetAddress);
+        require(minPrice1e18 == 0 || target >= minPrice1e18, "target price is below the asset's band");
+        require(maxPrice1e18 == 0 || target <= maxPrice1e18, "target price is above the asset's band");
+
+        (uint256 current,) = pool.currentPrice(assetAddress);
+        uint256 guard;
+        while (current != target) {
+            uint256 next = target;
+            if (maxDeviationBps != 0) {
+                uint256 limit = (current * maxDeviationBps) / BPS;
+                if (current > target) {
+                    uint256 floor = current - limit;
+                    if (floor > target) next = floor;
+                } else {
+                    uint256 ceiling = current + limit;
+                    if (ceiling < target) next = ceiling;
+                }
+            }
+            pool.setPrice(assetAddress, next);
+            current = next;
+            priceSteps += 1;
+            guard += 1;
+            require(guard < 64, "deviation guard too tight to reach the target price");
+        }
+    }
 
     function run() external {
         Plan memory plan = _plan();
@@ -161,14 +192,15 @@ contract Smoke is Script {
         require(crashPrice > 0, "crash price underflowed");
 
         vm.startBroadcast(plan.deployerKey);
-        pool.setPrice(assetAddress, crashPrice);
+        _movePriceTo(crashPrice);
         require(pool.isLiquidatable(plan.tester, assetAddress), "position did not become liquidatable");
         pool.liquidate(plan.tester, assetAddress, type(uint256).max);
-        pool.setPrice(assetAddress, plan.startingPrice);
+        _movePriceTo(plan.startingPrice);
         vm.stopBroadcast();
 
         (uint256 collateralAfter, uint256 debtAfter,) = pool.positions(plan.tester, assetAddress);
         console.log("--- liquidated ---");
+        console.log("priceStepsTaken", priceSteps);
         console.log("thresholdPrice1e18", thresholdPrice);
         console.log("crashPrice1e18", crashPrice);
         console.log("priceRestoredTo1e18", plan.startingPrice);

@@ -22,6 +22,17 @@ contract Deploy is Script {
         pool.configureAsset(address(bnvda), 5500, 7000, 172.35e18);
         pool.configureAsset(address(tgold), 6500, 8000, 3392.8e18);
 
+        // Sanity bounds per asset: age matched to what the feed's heartbeat would be, a movement
+        // limit sized to how far the asset plausibly travels between two updates, and a band around
+        // where it trades. These are testnet values chosen to exercise the guards; the launch set is
+        // decided with the risk parameter policy.
+        pool.setPriceGuard(address(tbill), 1 days, 1_000, 50e18, 150e18);
+        pool.setPriceGuard(address(bnvda), 1 hours, 2_000, 10e18, 1_000e18);
+        pool.setPriceGuard(address(tgold), 1 days, 1_500, 1_000e18, 10_000e18);
+
+        // The L2 sequencer uptime feed is deliberately left unset: Chainlink has not published one
+        // for Robinhood Chain. setSequencerUptimeFeed wires it the day one exists, with no redeploy.
+
         PassportRegistry registry = new PassportRegistry();
         PartnershipDesk desk = new PartnershipDesk(address(usdc));
 
