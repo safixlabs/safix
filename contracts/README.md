@@ -146,4 +146,19 @@ Simulated end to end against the live Robinhood Chain testnet RPC: about 10.1M g
 PRIVATE_KEY=0x... forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast
 ```
 
+**A shared deployment comes from a tag on `main`, never from a working tree.** Tag the commit, deploy from a clean checkout of it, and record from the branch that carries the record:
+
+```
+git tag -a testnet-YYYY-MM-DD <commit on main>
+git worktree add --detach ../deploy <tag> && git -C ../deploy submodule update --init
+(cd ../deploy/contracts && forge script script/Deploy.s.sol --rpc-url robinhood_testnet --broadcast --slow --gas-estimate-multiplier 200)
+node scripts/record-deployment.mjs testnet --worktree ../deploy
+node scripts/verify-ownership.mjs testnet
+POOL=... DESK=... forge script script/CheckDeployedFixes.s.sol --rpc-url robinhood_testnet
+```
+
+`record-deployment.mjs` refuses a testnet or mainnet record whose source is dirty, whose commit carries no tag, or whose commit is not on `main`, and keeps the deployment it replaces under `superseded`, so an address someone saved can be traced to where it moved. Verify every contract with `--skip-is-verified-check` and confirm it through the explorer's own API (`/api/v2/smart-contracts/<address>`, `is_fully_verified`): Blockscout reports a contract whose bytecode matches one verified elsewhere as already verified, while showing that other contract's source. `CheckDeployedFixes.s.sol` is a simulation, nothing is sent: it drives the setTimelock, future-dated round, `declareDefault` and empty-claim fixes against the deployment's own bytecode, and fails against one built before them.
+
+After handover the owner is the multisig and no price updater is set, so the three mock assets' manual prices go stale within their guard's age (an hour for bNVDA). On testnet the multisig appoints the keeper's key with `setPriceUpdater`, which needs no timelock, and the keeper posts those prices.
+
 The script deploys mock USDG and three mock collateral tokens, configures them, seeds the pool, deploys the registry and the desk, attests the deployer, and opens a first partnership. Afterwards `node ../scripts/wire-env.mjs testnet` writes the app env and the keeper config from the broadcast. For real stock tokens, configure each asset and wire its Chainlink feed with `setPriceFeed`; corporate actions arrive through the feed, so no extra handling is needed. On mainnet, <img src="../docs/assets/usdg.png" width="16" alt="USDG logo" /> USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`) is the natural pool denomination.
