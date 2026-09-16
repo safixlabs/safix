@@ -30,7 +30,7 @@ const POOL_ABI = [
     outputs: [
       { name: "collateral", type: "uint256" },
       { name: "debt", type: "uint256" },
-      { name: "totalDrawn", type: "uint256" }
+      { name: "principal", type: "uint256" }
     ]
   }
 ] as const
@@ -202,7 +202,7 @@ async function commandReconcile() {
       })) as readonly [bigint, bigint, bigint]
       report(`${borrower}/${asset} collateral`, position.collateral, onChain[0])
       report(`${borrower}/${asset} debt`, position.debt, onChain[1])
-      report(`${borrower}/${asset} totalDrawn`, position.totalDrawn, onChain[2])
+      report(`${borrower}/${asset} principal`, position.principal, onChain[2])
     }
 
     log.info("reconcile.done", { block: at, positions: folded.positions.size, mismatches })

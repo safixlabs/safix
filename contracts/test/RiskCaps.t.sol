@@ -261,13 +261,15 @@ contract RiskCapsTest is Test {
         // Leaving one unit less would be dust, so the repayment takes the whole debt instead, as a
         // liquidation would. The position ends at zero, never in between. The refusal that remains
         // when the borrower cannot cover the whole debt is tested in RepayFloor.t.sol.
+        // With it goes the redemption fee on the principal still inside that debt (#33).
+        (,, uint256 principalLeft) = pool.positions(borrower, address(tbill));
         uint256 balanceBefore = usdc.balanceOf(borrower);
         pool.repay(address(tbill), 1);
         vm.stopPrank();
 
         (, uint256 finalDebt,) = pool.positions(borrower, address(tbill));
         assertEq(finalDebt, 0);
-        assertEq(balanceBefore - usdc.balanceOf(borrower), 1_000e6);
+        assertEq(balanceBefore - usdc.balanceOf(borrower), 1_000e6 + (principalLeft * pool.redemptionFeeBps()) / 10_000);
     }
 
     function testClosePositionIsNeverBlockedByTheMinimum() public {

@@ -56,10 +56,14 @@ contract SafixPool is Guardable {
         DeviationTooLarge
     }
 
+    /// @param principal the part of `debt` that was drawn rather than charged as an origination fee,
+    ///                  and has not been paid back yet. It is the redemption fee's base (#33): paying
+    ///                  principal back, by a repayment or at close, pays the fee on it, and a
+    ///                  liquidation retires it in proportion without one. It never exceeds `debt`.
     struct Position {
         uint256 collateral;
         uint256 debt;
-        uint256 totalDrawn;
+        uint256 principal;
     }
 
     struct DepositRecord {
@@ -167,6 +171,9 @@ contract SafixPool is Guardable {
     event CollateralWithdrawn(address indexed borrower, address indexed asset, uint256 amount);
     event Drawn(address indexed borrower, address indexed asset, uint256 amount, uint256 fee);
     event Repaid(address indexed borrower, address indexed asset, uint256 amount);
+    /// @notice The redemption fee paid with a repayment, on the principal that repayment retired. A
+    ///         close reports its own fee in `PositionClosed`.
+    event RedemptionFeePaid(address indexed borrower, address indexed asset, uint256 principalRetired, uint256 fee);
     event PositionClosed(address indexed borrower, address indexed asset, uint256 redemptionFee);
     event Liquidated(
         address indexed borrower,
@@ -669,7 +676,10 @@ contract SafixPool is Guardable {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.collateral, "bad amount");
         uint256 remaining = position.collateral - amount;
-        if (position.debt > 0 || position.totalDrawn > 0) {
+        // A position that still owes has to close to release the last of its collateral. Principal
+        // never exceeds debt, so once the debt is repaid the redemption fee has been paid with it and
+        // a close would collect nothing: there is no reason left to hold the collateral back.
+        if (position.debt > 0) {
             require(remaining > 0, "close position instead");
         }
         // With no debt there is nothing a price could tell us, so an unusable feed never traps
@@ -714,7 +724,7 @@ contract SafixPool is Guardable {
         require(debtAdded <= drawableLiquidity(), "illiquid");
 
         position.debt = newDebt;
-        position.totalDrawn += amount;
+        position.principal += amount;
         assetDebt[asset] += debtAdded;
         totalDebt += debtAdded;
         // The reserve is funded from the same event that creates the risk it covers.
@@ -725,6 +735,14 @@ contract SafixPool is Guardable {
         emit Drawn(msg.sender, asset, amount, fee);
     }
 
+    /// @dev The redemption fee on principal paid back. Rounded down, as it always was at close.
+    function _redemptionFee(uint256 principal) internal view returns (uint256) {
+        return (principal * redemptionFeeBps) / BPS;
+    }
+
+    /// @notice Pays `amount` of debt, and with it the redemption fee on the principal it retires. The
+    ///         fee is paid on principal as it goes back rather than all at close, so repaying before
+    ///         closing skips nothing. `repaymentOwed` quotes both before the signature.
     function repay(address asset, uint256 amount) external nonReentrant {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.debt, "bad amount");
@@ -734,29 +752,56 @@ contract SafixPool is Guardable {
         // repayment that cures an unhealthy position whenever the floor sits above the healthy
         // debt, and would leave a position under a floor raised after it opened repayable only in
         // full, by a second call. The position still ends at zero or at the floor and above, never
-        // in between. It escalates only when the borrower has approved and holds the whole debt;
-        // otherwise the refusal stands with its reason, rather than surfacing as a token error
-        // about an allowance nobody asked for.
+        // in between. It escalates only when the borrower has approved and holds the whole debt and
+        // the redemption fee on the whole principal; otherwise the refusal stands with its reason,
+        // rather than surfacing as a token error about an allowance nobody asked for.
         if (remaining != 0 && remaining < minPositionDebt) {
-            uint256 whole = position.debt;
+            uint256 whole = position.debt + _redemptionFee(position.principal);
             require(
                 stable.allowance(msg.sender, address(this)) >= whole && stable.balanceOf(msg.sender) >= whole,
                 "position too small"
             );
-            amount = whole;
+            amount = position.debt;
             remaining = 0;
         }
+        // Principal goes back in proportion to the debt repaid, and pays the redemption fee as it
+        // goes. Proportion keeps principal at or below the debt, which is what bounds what a later
+        // liquidation can retire without a fee. A repayment of the whole debt retires all of it.
+        uint256 principalRetired = (position.principal * amount) / position.debt;
+        uint256 fee = _redemptionFee(principalRetired);
         position.debt = remaining;
+        position.principal -= principalRetired;
         assetDebt[asset] -= amount;
         totalDebt -= amount;
-        require(stable.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        protocolFees += fee;
+        require(stable.transferFrom(msg.sender, address(this), amount + fee), "transfer failed");
         emit Repaid(msg.sender, asset, amount);
+        if (principalRetired > 0) emit RedemptionFeePaid(msg.sender, asset, principalRetired, fee);
+    }
+
+    /// @notice What `repay(asset, amount)` would take from `borrower`: the debt it retires and the
+    ///         redemption fee on the principal inside it. It applies the same dust rule `repay` does,
+    ///         so an interface can approve the right amount before the signature, including the whole
+    ///         debt and its fee when the amount asked for would leave dust, and it refuses what repay
+    ///         refuses.
+    function repaymentOwed(address borrower, address asset, uint256 amount)
+        external
+        view
+        returns (uint256 debtRetired, uint256 fee)
+    {
+        Position storage position = positions[borrower][asset];
+        require(amount > 0 && amount <= position.debt, "bad amount");
+        debtRetired = amount;
+        uint256 remaining = position.debt - amount;
+        if (remaining != 0 && remaining < minPositionDebt) debtRetired = position.debt;
+        fee = _redemptionFee((position.principal * debtRetired) / position.debt);
     }
 
     function closePosition(address asset) external nonReentrant {
         Position storage position = positions[msg.sender][asset];
         require(position.collateral > 0 || position.debt > 0, "no position");
-        uint256 redemptionFee = (position.totalDrawn * redemptionFeeBps) / BPS;
+        // Whatever principal is still outstanding pays its fee now; what went back earlier paid then.
+        uint256 redemptionFee = _redemptionFee(position.principal);
         uint256 owed = position.debt + redemptionFee;
         uint256 collateral = position.collateral;
         assetDebt[asset] -= position.debt;
@@ -764,7 +809,7 @@ contract SafixPool is Guardable {
         assetCollateral[asset] -= collateral;
         position.collateral = 0;
         position.debt = 0;
-        position.totalDrawn = 0;
+        position.principal = 0;
         protocolFees += redemptionFee;
         if (owed > 0) {
             require(stable.transferFrom(msg.sender, address(this), owed), "transfer failed");
@@ -804,7 +849,7 @@ contract SafixPool is Guardable {
 
         position.collateral = 0;
         position.debt = 0;
-        position.totalDrawn = 0;
+        position.principal = 0;
         assetDebt[asset] -= debt;
         totalDebt -= debt;
         assetCollateral[asset] -= collateral;
@@ -872,15 +917,16 @@ contract SafixPool is Guardable {
         if (position.debt - offset < minPositionDebt) offset = position.debt;
         require(offset > 0, "zero");
         uint256 seized = (position.collateral * offset) / position.debt;
-        // The redemption fee at close is charged on totalDrawn, so the share of the position the
-        // liquidation takes has to leave with it. Without this, draws that were already settled by
-        // a liquidation would be charged again the next time the borrower closes.
-        uint256 drawnOffset = (position.totalDrawn * offset) / position.debt;
+        // The principal inside the debt this settles leaves with it, without a fee: a liquidation is
+        // not the borrower paying back. Principal never exceeds debt, so this can never retire more
+        // fee base than the debt it settles. The ratio used to be lifetime draws over current debt,
+        // which any repayment made unbounded (#33).
+        uint256 principalRetired = (position.principal * offset) / position.debt;
         uint256 incentive = (seized * liquidationIncentiveBps) / BPS;
         uint256 poolShare = seized - incentive;
         position.debt -= offset;
         position.collateral -= seized;
-        position.totalDrawn -= drawnOffset;
+        position.principal -= principalRetired;
         assetDebt[asset] -= offset;
         totalDebt -= offset;
         assetCollateral[asset] -= seized;

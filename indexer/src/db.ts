@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS position (
   asset        TEXT NOT NULL,
   collateral   TEXT NOT NULL,
   debt         TEXT NOT NULL,
-  total_drawn  TEXT NOT NULL,
+  principal    TEXT NOT NULL,
   opened_block INTEGER NOT NULL,
   last_block   INTEGER NOT NULL,
   PRIMARY KEY (borrower, asset)
@@ -240,23 +240,23 @@ export class Store {
     asset: string
     collateral: bigint
     debt: bigint
-    totalDrawn: bigint
+    principal: bigint
     openedBlock: bigint
     lastBlock: bigint
   }) {
     this.db
       .prepare(
-        "INSERT INTO position (borrower, asset, collateral, debt, total_drawn, opened_block, last_block) " +
+        "INSERT INTO position (borrower, asset, collateral, debt, principal, opened_block, last_block) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT(borrower, asset) DO UPDATE SET collateral = excluded.collateral, debt = excluded.debt, " +
-          "total_drawn = excluded.total_drawn, last_block = excluded.last_block"
+          "principal = excluded.principal, last_block = excluded.last_block"
       )
       .run(
         row.borrower,
         row.asset,
         row.collateral.toString(),
         row.debt.toString(),
-        row.totalDrawn.toString(),
+        row.principal.toString(),
         Number(row.openedBlock),
         Number(row.lastBlock)
       )
@@ -264,15 +264,15 @@ export class Store {
 
   position(borrower: string, asset: string) {
     const row = this.db
-      .prepare("SELECT collateral, debt, total_drawn, opened_block, last_block FROM position WHERE borrower = ? AND asset = ?")
+      .prepare("SELECT collateral, debt, principal, opened_block, last_block FROM position WHERE borrower = ? AND asset = ?")
       .get(borrower, asset) as
-      | { collateral: string; debt: string; total_drawn: string; opened_block: number; last_block: number }
+      | { collateral: string; debt: string; principal: string; opened_block: number; last_block: number }
       | undefined
     if (!row) return null
     return {
       collateral: BigInt(row.collateral),
       debt: BigInt(row.debt),
-      totalDrawn: BigInt(row.total_drawn),
+      principal: BigInt(row.principal),
       openedBlock: BigInt(row.opened_block),
       lastBlock: BigInt(row.last_block)
     }
@@ -282,7 +282,7 @@ export class Store {
   /// narrows it to the ones that still carry debt, which is all the keeper needs to look at.
   positions(openOnly: boolean) {
     const sql =
-      "SELECT borrower, asset, collateral, debt, total_drawn, opened_block, last_block FROM position " +
+      "SELECT borrower, asset, collateral, debt, principal, opened_block, last_block FROM position " +
       (openOnly ? "WHERE debt != '0' " : "") +
       "ORDER BY last_block DESC"
     return (
@@ -291,7 +291,7 @@ export class Store {
         asset: string
         collateral: string
         debt: string
-        total_drawn: string
+        principal: string
         opened_block: number
         last_block: number
       }[]
@@ -300,7 +300,7 @@ export class Store {
       asset: row.asset,
       collateral: row.collateral,
       debt: row.debt,
-      totalDrawn: row.total_drawn,
+      principal: row.principal,
       openedBlock: row.opened_block,
       lastBlock: row.last_block
     }))

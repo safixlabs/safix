@@ -119,16 +119,17 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         vm.stopPrank();
     }
 
-    /// @dev Holds the whole debt before repaying, so a partial that would leave dust takes the
-    ///      escalation path rather than the refusal: both are the pool's to decide, and the
-    ///      escalation is the one that moves money.
+    /// @dev Holds the whole debt and the redemption fee on the whole principal before repaying, so
+    ///      a partial that would leave dust takes the escalation path rather than the refusal: both
+    ///      are the pool's to decide, and the escalation is the one that moves money.
     function repay(uint256 actorSeed, uint256 amount) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
-        (, uint256 debt,) = pool.positions(borrower, address(tbill));
+        (, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         if (debt == 0) return;
         amount = bound(amount, 1, debt);
+        uint256 owed = debt + (principal * pool.redemptionFeeBps()) / 10_000;
         uint256 balance = usdc.balanceOf(borrower);
-        if (balance < debt) usdc.mint(borrower, debt - balance);
+        if (balance < owed) usdc.mint(borrower, owed - balance);
         vm.prank(borrower);
         pool.repay(address(tbill), amount);
     }
@@ -137,9 +138,9 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
     ///      otherwise all but what keeps the position alive and the loan inside its LTV.
     function withdrawCollateral(uint256 actorSeed, uint256 amount) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
-        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        (uint256 collateral, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         if (collateral == 0) return;
-        uint256 keep = (debt > 0 || totalDrawn > 0) ? 1 : 0;
+        uint256 keep = (debt > 0 || principal > 0) ? 1 : 0;
         if (debt > 0) {
             (uint256 price,) = pool.currentPrice(address(tbill));
             // Rounded up twice, against the pool's two roundings down.
@@ -156,9 +157,9 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
 
     function closePosition(uint256 actorSeed) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
-        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        (uint256 collateral, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         if (collateral == 0 && debt == 0) return;
-        uint256 owed = debt + (totalDrawn * pool.redemptionFeeBps()) / 10_000;
+        uint256 owed = debt + (principal * pool.redemptionFeeBps()) / 10_000;
         uint256 balance = usdc.balanceOf(borrower);
         if (balance < owed) usdc.mint(borrower, owed - balance);
         vm.prank(borrower);
@@ -338,6 +339,17 @@ contract PoolInvariantsTest is Test {
     function invariant_committedClaimsAreBacked() public view {
         assertGe(usdc.balanceOf(address(pool)), pool.protocolFees() + pool.reserve(), "fees or reserve unbacked");
         assertGe(pool.totalDeposits(), _sumDebt(), "deposits fell below the debt");
+    }
+
+    /// @dev The redemption fee's base is outstanding principal, and principal never exceeds the debt
+    ///      it is part of. So a liquidation, which retires principal in proportion to the debt it
+    ///      settles, can never retire more fee base than debt — the failure in #33, which this suite
+    ///      could not see while the base was lifetime draws and a repayment left it behind.
+    function invariant_principalNeverExceedsDebt() public view {
+        for (uint256 i = 0; i < 3; i++) {
+            (, uint256 debt, uint256 principal) = pool.positions(handler.borrowerAt(i), address(tbill));
+            assertLe(principal, debt, "principal exceeded the debt it is part of");
+        }
     }
 
     /// @dev The fuzzer only proves something about the paths it actually executes. This drives one

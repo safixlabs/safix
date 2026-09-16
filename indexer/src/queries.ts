@@ -50,7 +50,7 @@ export function positionHistory(store: Store, borrower: string, asset: string, l
       ? {
           collateral: current.collateral.toString(),
           debt: current.debt.toString(),
-          totalDrawn: current.totalDrawn.toString(),
+          principal: current.principal.toString(),
           openedBlock: Number(current.openedBlock),
           lastBlock: Number(current.lastBlock)
         }

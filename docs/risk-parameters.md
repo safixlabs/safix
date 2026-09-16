@@ -19,7 +19,7 @@ This document exists so that a parameter is never set by whoever happens to be a
 | `minPositionDebt` | pool | `setRiskLimits` | the smallest position that may stay open |
 | `minLiquidityBuffer` | pool | `setRiskLimits` | liquidity a draw must leave behind |
 | `reserveFeeShareBps` | pool | `setReserveFeeShare` | the share of each origination fee that funds the reserve |
-| `originationFeeBps` / `redemptionFeeBps` | pool | `setFees` | what a draw and a close cost |
+| `originationFeeBps` / `redemptionFeeBps` | pool | `setFees` | what a draw costs, and what paying principal back costs, by a repayment or at close |
 | `liquidationIncentiveBps` | pool | `setLiquidationIncentive` | the keeper's share of seized collateral |
 
 ## Asset classes

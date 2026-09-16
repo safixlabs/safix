@@ -125,7 +125,7 @@ that has to be running before the indexer can start.
 | `price` | `AnswerUpdated` from every feed the pool has been pointed at |
 | `feed_meta` | A feed's decimals and description, read once |
 | `pool_point` | Pool size and debt after each event that moved either, **folded from events** |
-| `position` | Current collateral, debt and drawn per borrower and asset, folded the same way |
+| `position` | Current collateral, debt and outstanding principal per borrower and asset, folded the same way |
 | `cursor` | The last fully-written block |
 
 `pool_point` and `position` are derived, so a reorg deletes and refolds them. Events and prices are
@@ -185,16 +185,16 @@ bitmask and a date, both already public.
 
 ## Reconciliation
 
-The pool's history is derived, so the derivation has to be checked:
+The pool's history is derived, so the derivation has to be checked: — here against a local deployment carrying a partially repaid position, the case where principal and debt part company:
 
 ```
 $ npm run reconcile
-INFO reconcile.match field=totalDeposits indexed=251500000000 chain=251500000000 difference=0
-INFO reconcile.match field=totalDebt     indexed=4020000000   chain=4020000000   difference=0
-INFO reconcile.match field=0xd7e3…/0xe848… collateral  indexed=80000000000000000000 chain=80000000000000000000 difference=0
-INFO reconcile.match field=0xd7e3…/0xe848… debt        indexed=4020000000 chain=4020000000 difference=0
-INFO reconcile.match field=0xd7e3…/0xe848… totalDrawn  indexed=4000000000 chain=4000000000 difference=0
-INFO reconcile.done block=115084834 positions=1 mismatches=0
+INFO reconcile.match field=totalDeposits indexed=249945200001 chain=249945200001 difference=0
+INFO reconcile.match field=totalDebt indexed=1310000000 chain=1310000000 difference=0
+INFO reconcile.match field=0x90f7…/0xe7f1… collateral indexed=50000000000000000000 chain=50000000000000000000 difference=0
+INFO reconcile.match field=0x90f7…/0xe7f1… debt indexed=1310000000 chain=1310000000 difference=0
+INFO reconcile.match field=0x90f7…/0xe7f1… principal indexed=1303482588 chain=1303482588 difference=0
+INFO reconcile.done block=72 positions=3 mismatches=0
 ```
 
 It rebuilds from stored events rather than trusting the running fold, so it checks two things at
@@ -204,7 +204,10 @@ only by eye.
 
 Each rule in `src/fold.ts` names the line in `SafixPool` it mirrors. The one that is not obvious:
 `PositionClosed` does not carry the debt it cleared, so the fold supplies it from the running
-position — the only pool quantity no single log can answer for.
+position — the only pool quantity no single log can answer for. And a repayment retires principal
+in proportion to the debt it repays, rounded down exactly as the pool rounds it, so the fold's
+principal stays at or below its debt the way the contract's does; the redemption fee the repayment
+paid is on record in `RedemptionFeePaid` and never moves the debt.
 
 ## Reorgs
 

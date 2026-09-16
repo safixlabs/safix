@@ -63,7 +63,7 @@ before(async () => {
     asset: ASSET,
     collateral: 80n * 10n ** 18n,
     debt: 502_500_000n,
-    totalDrawn: 500_000_000n,
+    principal: 500_000_000n,
     openedBlock: 100n,
     lastBlock: 101n
   })

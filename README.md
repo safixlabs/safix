@@ -28,7 +28,7 @@ The platform privately verifies that the collateral is real, valuable enough, el
 
 Safix charges for events, not for time. There is no time-based interest anywhere in the network.
 
-- Zero-interest credit line, following the peer-to-pool model pioneered by Liquity: a one-time origination fee (for example 0.5%) when funds are drawn and a fixed redemption fee when the position is closed. Debt never grows over time.
+- Zero-interest credit line, following the peer-to-pool model pioneered by Liquity: a one-time origination fee (for example 0.5%) when funds are drawn, and a fixed redemption fee on principal as it is paid back, whether by a repayment or at close. Debt never grows over time.
 - Profit and loss sharing: for financing tied to a business or a productive asset, the pool provides capital as a partner instead of a creditor. Profit is split at a pre-agreed ratio (for example 60/40). Genuine losses without misconduct or negligence fall on the capital.
 
 ## Privacy layer

@@ -64,9 +64,9 @@ contract SafixPoolTest is Test {
         _seedPool(50_000e6);
         _openPosition(100e18, 5_000e6);
 
-        (, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        (, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         assertEq(debt, 5_025e6);
-        assertEq(totalDrawn, 5_000e6);
+        assertEq(principal, 5_000e6);
         assertEq(pool.protocolFees(), 25e6);
         assertEq(usdc.balanceOf(borrower), 105_000e6);
     }
@@ -92,12 +92,17 @@ contract SafixPoolTest is Test {
         pool.closePosition(address(tbill));
         vm.stopPrank();
 
-        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        (uint256 collateral, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         assertEq(collateral, 0);
         assertEq(debt, 0);
-        assertEq(totalDrawn, 0);
+        assertEq(principal, 0);
         assertEq(tbill.balanceOf(borrower), 1_000e18);
-        assertEq(pool.protocolFees(), 25e6 + 15e6);
+        // The redemption fee is paid on principal as it goes back: on the share the repayment
+        // retired, then on the rest at close, each rounded down on its own (#33).
+        uint256 retired = (uint256(5_000e6) * 2_000e6) / 5_025e6;
+        uint256 redemption =
+            (retired * pool.redemptionFeeBps()) / 10_000 + ((5_000e6 - retired) * pool.redemptionFeeBps()) / 10_000;
+        assertEq(pool.protocolFees(), 25e6 + redemption);
     }
 
     function testCannotDrainCollateralWhileInDebt() public {
@@ -210,7 +215,7 @@ contract SafixPoolTest is Test {
         vm.stopPrank();
     }
 
-    function testFullLiquidationClearsTotalDrawn() public {
+    function testFullLiquidationClearsPrincipal() public {
         _seedPool(50_000e6);
         _openPosition(100e18, 5_000e6);
         pool.setPrice(address(tbill), 55e18);
@@ -218,28 +223,28 @@ contract SafixPoolTest is Test {
         vm.prank(keeper);
         pool.liquidate(borrower, address(tbill), type(uint256).max);
 
-        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        (uint256 collateral, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
         assertEq(collateral, 0);
         assertEq(debt, 0);
         // Nothing of the position survives, so nothing is left to charge a redemption fee on.
-        assertEq(totalDrawn, 0);
+        assertEq(principal, 0);
     }
 
-    function testPartialLiquidationReducesTotalDrawnProRata() public {
+    function testPartialLiquidationReducesPrincipalProRata() public {
         _seedPool(50_000e6);
         _openPosition(100e18, 5_000e6);
         pool.setPrice(address(tbill), 55e18);
 
-        (, uint256 debtBefore, uint256 drawnBefore) = pool.positions(borrower, address(tbill));
+        (, uint256 debtBefore, uint256 principalBefore) = pool.positions(borrower, address(tbill));
         uint256 offset = debtBefore / 4;
 
         vm.prank(keeper);
         pool.liquidate(borrower, address(tbill), offset);
 
-        (, uint256 debtAfter, uint256 drawnAfter) = pool.positions(borrower, address(tbill));
+        (, uint256 debtAfter, uint256 principalAfter) = pool.positions(borrower, address(tbill));
         assertEq(debtAfter, debtBefore - offset);
-        // Drawn principal falls by the same share of the position the liquidation took.
-        assertEq(drawnAfter, drawnBefore - (drawnBefore * offset) / debtBefore);
+        // Principal falls by the same share of the position the liquidation took, without a fee.
+        assertEq(principalAfter, principalBefore - (principalBefore * offset) / debtBefore);
     }
 
     function testRedemptionFeeIgnoresLiquidatedDraws() public {

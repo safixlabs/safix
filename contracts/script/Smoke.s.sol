@@ -174,12 +174,12 @@ contract Smoke is Script {
         pool.draw(assetAddress, plan.drawAmount);
         vm.stopBroadcast();
 
-        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(plan.tester, assetAddress);
+        (uint256 collateral, uint256 debt, uint256 principal) = pool.positions(plan.tester, assetAddress);
         console.log("--- lifecycle complete, position reopened ---");
         console.log("borrowerCompoundedDeposit", pool.compoundedDepositOf(plan.tester));
         console.log("positionCollateral", collateral);
         console.log("positionDebt", debt);
-        console.log("positionTotalDrawn", totalDrawn);
+        console.log("positionPrincipal", principal);
         console.log("poolProtocolFees", pool.protocolFees());
     }
 

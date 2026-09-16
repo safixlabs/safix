@@ -42,6 +42,14 @@ export const INDEXED_EVENTS: IndexedEvent[] = [
   event("pool", "CollateralWithdrawn(address indexed borrower, address indexed asset, uint256 amount)", "borrower", "asset"),
   event("pool", "Drawn(address indexed borrower, address indexed asset, uint256 amount, uint256 fee)", "borrower", "asset"),
   event("pool", "Repaid(address indexed borrower, address indexed asset, uint256 amount)", "borrower", "asset"),
+  // The redemption fee a repayment paid, on the principal it retired (#33). History, not arithmetic:
+  // the fee never moves the debt, so the fold reads Repaid and leaves this to the record.
+  event(
+    "pool",
+    "RedemptionFeePaid(address indexed borrower, address indexed asset, uint256 principalRetired, uint256 fee)",
+    "borrower",
+    "asset"
+  ),
   event("pool", "PositionClosed(address indexed borrower, address indexed asset, uint256 redemptionFee)", "borrower", "asset"),
 
   // --- the pool: losses ------------------------------------------------------------------

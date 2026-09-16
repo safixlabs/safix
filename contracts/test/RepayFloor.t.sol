@@ -74,21 +74,36 @@ contract RepayFloorTest is Test {
         return (value * threshold) / 10_000;
     }
 
+    function _principal() internal view returns (uint256 principal) {
+        (,, principal) = pool.positions(borrower, address(tbill));
+    }
+
+    /// @dev The redemption fee on principal paid back (#33): charged whenever principal goes back,
+    ///      so a repayment costs the amount plus the fee on the principal it retires.
+    function _redemptionFee(uint256 principal) internal view returns (uint256) {
+        return (principal * pool.redemptionFeeBps()) / 10_000;
+    }
+
     // --------------------------------------------------------------------------------------
     // the measured case
     // --------------------------------------------------------------------------------------
 
     function testTheLargestPartialTheFloorAllowsLeavesThePositionLiquidatable() public {
         uint256 debt = _openUnhealthyPosition();
+        uint256 principal = _principal();
         uint256 balanceBefore = usdc.balanceOf(borrower);
 
-        // Repaying down to exactly the floor is allowed, and takes exactly what was asked.
+        // Repaying down to exactly the floor is allowed, and takes what was asked plus the
+        // redemption fee on the principal it retires.
         vm.prank(borrower);
         pool.repay(address(tbill), debt - FLOOR);
 
         (, uint256 remaining,) = pool.positions(borrower, address(tbill));
         assertEq(remaining, FLOOR);
-        assertEq(balanceBefore - usdc.balanceOf(borrower), debt - FLOOR);
+        assertEq(
+            balanceBefore - usdc.balanceOf(borrower),
+            (debt - FLOOR) + _redemptionFee((principal * (debt - FLOOR)) / debt)
+        );
         // And it does not cure: the floor sits above the healthy debt. This is why the repayment
         // below has to be possible at all.
         assertGt(FLOOR, _healthyDebt());
@@ -97,6 +112,7 @@ contract RepayFloorTest is Test {
 
     function testTheRepaymentThatCuresAnUnhealthyPositionIsNotRefused() public {
         uint256 debt = _openUnhealthyPosition();
+        uint256 principal = _principal();
         uint256 balanceBefore = usdc.balanceOf(borrower);
 
         // 825 would leave 4,200, exactly healthy, and under the 4,500 floor. It used to revert
@@ -109,7 +125,11 @@ contract RepayFloorTest is Test {
         assertEq(remaining, 0, "the position ends at zero, not in the dust band");
         assertEq(collateral, COLLATERAL, "collateral stays locked until the borrower closes");
         assertFalse(pool.isLiquidatable(borrower, address(tbill)));
-        assertEq(balanceBefore - usdc.balanceOf(borrower), debt, "the whole debt was taken");
+        assertEq(
+            balanceBefore - usdc.balanceOf(borrower),
+            debt + _redemptionFee(principal),
+            "the whole debt was taken, with the fee on the whole principal"
+        );
         assertEq(pool.assetDebt(address(tbill)), 0);
         assertEq(pool.totalDebt(), 0);
     }
@@ -132,19 +152,20 @@ contract RepayFloorTest is Test {
     function testEscalationNeedsAnAllowanceForTheWholeDebt() public {
         uint256 debt = _openUnhealthyPosition();
         uint256 cure = debt - _healthyDebt();
+        uint256 owed = debt + _redemptionFee(_principal());
 
-        // One unit short of the whole debt: the refusal stands, and nothing moves.
+        // One unit short of the whole debt and its fee: the refusal stands, and nothing moves.
         vm.prank(borrower);
-        usdc.approve(address(pool), debt - 1);
+        usdc.approve(address(pool), owed - 1);
         vm.prank(borrower);
         vm.expectRevert(bytes("position too small"));
         pool.repay(address(tbill), cure);
         (, uint256 unchanged,) = pool.positions(borrower, address(tbill));
         assertEq(unchanged, debt);
 
-        // Exactly the whole debt: it escalates.
+        // Exactly the whole debt and its fee: it escalates.
         vm.prank(borrower);
-        usdc.approve(address(pool), debt);
+        usdc.approve(address(pool), owed);
         vm.prank(borrower);
         pool.repay(address(tbill), cure);
         (, uint256 remaining,) = pool.positions(borrower, address(tbill));
@@ -154,16 +175,17 @@ contract RepayFloorTest is Test {
     function testEscalationNeedsABalanceForTheWholeDebt() public {
         uint256 debt = _openUnhealthyPosition();
         uint256 cure = debt - _healthyDebt();
+        uint256 owed = debt + _redemptionFee(_principal());
 
-        // One unit short of the whole debt.
+        // One unit short of the whole debt and its fee.
         uint256 balance = usdc.balanceOf(borrower);
         vm.prank(borrower);
-        usdc.transfer(outsider, balance - (debt - 1));
+        usdc.transfer(outsider, balance - (owed - 1));
         vm.prank(borrower);
         vm.expectRevert(bytes("position too small"));
         pool.repay(address(tbill), cure);
 
-        // Exactly the whole debt.
+        // Exactly the whole debt and its fee.
         usdc.mint(borrower, 1);
         vm.prank(borrower);
         pool.repay(address(tbill), cure);
@@ -182,7 +204,7 @@ contract RepayFloorTest is Test {
         pool.lockCollateral(address(tbill), COLLATERAL);
         pool.draw(address(tbill), 1_000e6);
         vm.stopPrank();
-        (, uint256 debt,) = pool.positions(borrower, address(tbill));
+        (, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
 
         // Governance raises the floor above a position that was never near liquidation. Every
         // partial repayment now leaves it under the floor.
@@ -195,7 +217,7 @@ contract RepayFloorTest is Test {
 
         (, uint256 remaining,) = pool.positions(borrower, address(tbill));
         assertEq(remaining, 0);
-        assertEq(balanceBefore - usdc.balanceOf(borrower), debt);
+        assertEq(balanceBefore - usdc.balanceOf(borrower), debt + _redemptionFee(principal));
     }
 
     // --------------------------------------------------------------------------------------
@@ -206,7 +228,7 @@ contract RepayFloorTest is Test {
         vm.startPrank(borrower);
         pool.lockCollateral(address(tbill), COLLATERAL);
         pool.draw(address(tbill), DRAW);
-        (, uint256 debt,) = pool.positions(borrower, address(tbill));
+        (, uint256 debt, uint256 principal) = pool.positions(borrower, address(tbill));
 
         uint256 balanceBefore = usdc.balanceOf(borrower);
         pool.repay(address(tbill), debt - 1);
@@ -214,7 +236,7 @@ contract RepayFloorTest is Test {
 
         (, uint256 remaining,) = pool.positions(borrower, address(tbill));
         assertEq(remaining, 1, "one unit left, exactly as asked");
-        assertEq(balanceBefore - usdc.balanceOf(borrower), debt - 1);
+        assertEq(balanceBefore - usdc.balanceOf(borrower), (debt - 1) + _redemptionFee((principal * (debt - 1)) / debt));
     }
 
     function testRepayingMoreThanTheDebtIsStillRefused() public {

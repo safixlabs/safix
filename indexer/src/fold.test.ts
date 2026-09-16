@@ -47,7 +47,7 @@ test("a draw adds the origination fee to the debt, not beside it", () => {
   const position = fold.positions.get(`${BORROWER}:${ASSET}`)
   assert.ok(position)
   assert.equal(position.debt, 1_005_000_000n, "debt carries the fee")
-  assert.equal(position.totalDrawn, 1_000_000_000n, "totalDrawn does not")
+  assert.equal(position.principal, 1_000_000_000n, "principal does not")
   assert.equal(fold.pool.debt, 1_005_000_000n)
 })
 
@@ -66,7 +66,7 @@ test("closing a position clears debt the event never states", () => {
   const position = fold.positions.get(`${BORROWER}:${ASSET}`)
   assert.equal(position?.debt, 0n)
   assert.equal(position?.collateral, 0n)
-  assert.equal(position?.totalDrawn, 0n)
+  assert.equal(position?.principal, 0n)
 })
 
 test("a liquidation with no shortfall takes the whole offset from providers", () => {
@@ -120,7 +120,7 @@ test("the reserve's share of a shortfall does not fall on providers", () => {
   assert.equal(fold.pool.deposits, 10_000_000_000n - 800_000_000n)
 })
 
-test("a partial liquidation takes its share of totalDrawn with it", () => {
+test("a partial liquidation takes its share of principal with it", () => {
   // SafixPool L860. Without this the borrower is charged a redemption fee at close on draws a
   // liquidation already settled — the bug fixed in #1, kept honest here.
   const fold = new Fold()
@@ -137,7 +137,25 @@ test("a partial liquidation takes its share of totalDrawn with it", () => {
 
   const position = fold.positions.get(`${BORROWER}:${ASSET}`)
   assert.equal(position?.debt, 600_000_000n)
-  assert.equal(position?.totalDrawn, 600_000_000n, "40% of the debt went, so 40% of totalDrawn went")
+  assert.equal(position?.principal, 600_000_000n, "40% of the debt went, so 40% of principal went")
+})
+
+test("a repayment retires principal in proportion, the way the pool does", () => {
+  // SafixPool repay (#33): principal falls by principal × amount / debt, so it never exceeds the
+  // debt, and repaying the whole debt retires all of it. The fee is recorded, not folded.
+  const fold = new Fold()
+  fold.apply([
+    event("Drawn", { borrower: BORROWER, asset: ASSET, amount: "5000000000", fee: "25000000" }),
+    event("Repaid", { borrower: BORROWER, asset: ASSET, amount: "2000000000" }),
+    event("RedemptionFeePaid", { borrower: BORROWER, asset: ASSET, principalRetired: "1990049751", fee: "5970149" })
+  ])
+  const position = fold.positions.get(`${BORROWER}:${ASSET}`)
+  assert.equal(position?.debt, 3_025_000_000n)
+  assert.equal(position?.principal, 5_000_000_000n - 1_990_049_751n, "5,000 × 2,000 / 5,025, rounded down")
+  assert.equal(fold.pool.debt, 3_025_000_000n, "the fee is paid, not added to the debt")
+
+  fold.apply([event("Repaid", { borrower: BORROWER, asset: ASSET, amount: "3025000000" })])
+  assert.equal(fold.positions.get(`${BORROWER}:${ASSET}`)?.principal, 0n, "the whole debt retires all of it")
 })
 
 test("events that carry no arithmetic are stored but never move the pool", () => {
@@ -186,7 +204,7 @@ test("folding in pieces agrees with folding all at once", () => {
 
   assert.deepEqual(pieces.pool, whole.pool)
   assert.deepEqual(
-    [...pieces.positions.entries()].map(([id, value]) => [id, value.debt, value.collateral, value.totalDrawn]),
-    [...whole.positions.entries()].map(([id, value]) => [id, value.debt, value.collateral, value.totalDrawn])
+    [...pieces.positions.entries()].map(([id, value]) => [id, value.debt, value.collateral, value.principal]),
+    [...whole.positions.entries()].map(([id, value]) => [id, value.debt, value.collateral, value.principal])
   )
 })

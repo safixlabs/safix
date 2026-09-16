@@ -19,7 +19,7 @@ const poolAbi = parseAbi([
   "function currentPrice(address asset) view returns (uint256 price1e18, uint256 updatedAt)",
   "function isLiquidatable(address borrower, address asset) view returns (bool)",
   "function liquidate(address borrower, address asset, uint256 debtAmount)",
-  "function positions(address borrower, address asset) view returns (uint256 collateral, uint256 debt, uint256 totalDrawn)",
+  "function positions(address borrower, address asset) view returns (uint256 collateral, uint256 debt, uint256 principal)",
   "function pausedActions() view returns (uint8)",
   "event Drawn(address indexed borrower, address indexed asset, uint256 amount, uint256 fee)"
 ])

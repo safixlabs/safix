@@ -15,7 +15,7 @@ export type PoolState = { deposits: bigint; debt: bigint }
 export type PositionState = {
   collateral: bigint
   debt: bigint
-  totalDrawn: bigint
+  principal: bigint
   openedBlock: bigint
   lastBlock: bigint
 }
@@ -82,16 +82,21 @@ export class Fold {
           const amount = big(event.args.amount)
           const fee = big(event.args.fee)
           position.debt += amount + fee
-          position.totalDrawn += amount
+          position.principal += amount
           this.pool.debt += amount + fee
           this.touch(event, position)
           movedPool = true
           break
         }
 
+        // SafixPool repay (#33): principal goes back in proportion to the debt repaid, rounded
+        // down, so it never exceeds the debt and a repayment of the whole debt retires all of it.
+        // The redemption fee it pays is on record in RedemptionFeePaid and never moves the debt.
         case "Repaid": {
           const position = this.get(event)
           const amount = big(event.args.amount)
+          const principalRetired = position.debt > 0n ? (position.principal * amount) / position.debt : 0n
+          position.principal -= principalRetired
           position.debt -= amount
           this.pool.debt -= amount
           this.touch(event, position)
@@ -107,7 +112,7 @@ export class Fold {
           this.pool.debt -= position.debt
           position.debt = 0n
           position.collateral = 0n
-          position.totalDrawn = 0n
+          position.principal = 0n
           this.touch(event, position)
           movedPool = true
           break
@@ -125,12 +130,12 @@ export class Fold {
           const offset = big(event.args.debtOffset)
           const seized = big(event.args.collateralSeized)
 
-          // SafixPool L860: the share of totalDrawn the liquidation takes leaves with it, so the
-          // redemption fee at close is not charged twice on debt a liquidation already settled.
-          const drawnOffset = position.debt > 0n ? (position.totalDrawn * offset) / position.debt : 0n
+          // SafixPool liquidate: the principal inside the debt this settles leaves with it, without a
+          // fee. Principal never exceeds debt, so this never retires more than the offset (#33).
+          const principalRetired = position.debt > 0n ? (position.principal * offset) / position.debt : 0n
           position.debt -= offset
           position.collateral -= seized
-          position.totalDrawn -= drawnOffset
+          position.principal -= principalRetired
           this.touch(event, position)
 
           this.pool.debt -= offset
@@ -173,7 +178,7 @@ export class Fold {
     const id = key(borrower, asset)
     let position = this.positions.get(id)
     if (!position) {
-      position = { collateral: 0n, debt: 0n, totalDrawn: 0n, openedBlock: event.blockNumber, lastBlock: event.blockNumber }
+      position = { collateral: 0n, debt: 0n, principal: 0n, openedBlock: event.blockNumber, lastBlock: event.blockNumber }
       this.positions.set(id, position)
     }
     return position
