@@ -16,6 +16,8 @@ The Operator is `[legal entity, registration number, jurisdiction]`. Funders are
 
 The Operator receives `[funded amount]` USDG on activation, to be applied to `[stated purpose]` and nothing else.
 
+If the partnership has not been activated by `[funding deadline]`, anyone may cancel it, and each Funder recovers their contribution in full. The Operator receives nothing, and nobody owes anybody anything further.
+
 ### 2. Profit split
 
 Profit is what the Operator returns above the capital they received. It is split **`[100 − share]`% to Funders, `[share]`% to the Operator**, computed onchain by `operatorShareOf` and paid by `claim` and `claimOperator`.
@@ -78,7 +80,7 @@ Signed by the Operator and countersigned by Safix before the partnership is crea
 
 **Mandate.** The Auditor verifies what the Operator reports before capital is settled. Specifically: that reported returns match what arrived at the desk; that reported costs are supported by records; that capital was applied to the stated purpose; and, where a loss is claimed as genuine, whether the facts support that or point to clause 4.
 
-They call `approveSettlement`, and that is their only onchain power. They cannot create, fund, activate, cancel or settle a partnership, and they cannot move a token. **`settle` requires their approval whenever an auditor is set** — the Owner cannot settle around them.
+They call `approveSettlement`, and that is their only onchain power. They cannot create, fund, activate or settle a partnership, and they cannot move a token. Like anyone, they can cancel a partnership the Owner left unactivated past its funding deadline; that is a Funder's exit, not an Auditor's power. **`settle` requires their approval whenever an auditor is set** — the Owner cannot settle around them.
 
 **Independence.** The Auditor must not be a Funder in the partnership they audit, hold any interest in the Operator, be compensated on the outcome, or be appointed by the Operator. Appointment is by the Owner through the timelock, so it is visible in advance and cannot be changed to suit a settlement in progress.
 
@@ -114,6 +116,8 @@ Funding can be stopped instantly by the guardian: `pause(PAUSE_FUNDING)` needs n
 Before calling it: funding is what was expected, nothing has changed about the Operator since signature, and the reporting deadline is still appropriate for the term.
 
 `cancel(id)` before activation returns every contribution in full, and remains available while the desk is paused.
+
+**Activate by the funding deadline.** Past it, a partnership that was never activated can be cancelled by **anyone** with `cancelUnactivated(id)`, and each Funder then claims their contribution back in full. It is `declareDefault` one step earlier: capital that was never put to work must not be stranded by an Owner who does nothing. The Owner keeps the choice — `activate` still works after the deadline if nobody has cancelled — but from that moment a Funder can decline to wait, and whichever transaction lands first decides. Either way the Funders have a way out: a refund, or the reporting deadline. It stays open while the desk is paused.
 
 ### Report
 

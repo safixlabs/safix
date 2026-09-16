@@ -192,6 +192,27 @@ contract PartnershipDesk is Guardable {
         emit Cancelled(id);
     }
 
+    /// @notice Cancels a partnership that was never activated, once its funding deadline has
+    ///         passed. Callable by anyone, the same shape as `declareDefault` one step earlier: a
+    ///         funded partnership could otherwise leave `Funding` only through the owner, so an owner
+    ///         who neither activated nor cancelled left the capital with no way back at all.
+    ///
+    /// The owner keeps the choice of whether to activate: `activate` still works past the deadline
+    /// while nobody has cancelled. What goes is the ability to strand capital by doing nothing. From
+    /// the deadline on, a funder can decline to wait, whichever transaction lands first decides, and
+    /// either outcome leaves the funders a way out — a refund here, the reporting deadline there.
+    /// Not pausable, like every other exit.
+    function cancelUnactivated(uint256 id) external {
+        Partnership storage partnership = partnerships[id];
+        // An id nobody created reads as an empty struct in Funding with a zero deadline, which
+        // would otherwise let anyone put a Cancelled on record for a partnership that never existed.
+        require(partnership.operator != address(0), "no partnership");
+        require(partnership.status == Status.Funding, "not funding");
+        require(block.timestamp > partnership.fundingDeadline, "before deadline");
+        partnership.status = Status.Cancelled;
+        emit Cancelled(id);
+    }
+
     function reportReturn(uint256 id, uint256 amount) external nonReentrant {
         Partnership storage partnership = partnerships[id];
         // Still open after a default: an operator making good afterwards is strictly better for the
