@@ -351,9 +351,12 @@ contract SafixPool is Guardable {
         emit ReserveFunded(msg.sender, amount, reserve);
     }
 
-    /// @notice Takes stable back out of the reserve. Owner only, and it cannot reach further than
-    ///         the reserve holds, so this can never be a path into provider deposits.
-    function withdrawReserve(address to, uint256 amount) external onlyOwner nonReentrant {
+    /// @notice Takes stable back out of the reserve, through the timelock. The reserve is the
+    ///         providers' buffer: emptying it touches no deposit, but it decides who carries the
+    ///         next shortfall, so taking money out gets the same notice as every other change to a
+    ///         lender's exposure. Funding stays instant and open to anyone. It cannot reach further
+    ///         than the reserve holds, so it can never be a path into provider deposits.
+    function withdrawReserve(address to, uint256 amount) external onlyTimelock nonReentrant {
         require(amount > 0 && amount <= reserve, "bad amount");
         reserve -= amount;
         require(stable.transfer(to, amount), "transfer failed");
@@ -798,7 +801,6 @@ contract SafixPool is Guardable {
         uint256 debt = position.debt;
         uint256 collateralValue = (collateral * price1e18) / 1e30;
         require(collateralValue < minPositionDebt, "not dust");
-        require(totalDeposits > debt, "pool too small");
 
         position.collateral = 0;
         position.debt = 0;
@@ -808,6 +810,8 @@ contract SafixPool is Guardable {
         assetCollateral[asset] -= collateral;
 
         uint256 lpLoss = _settleShortfall(borrower, asset, debt, collateralValue);
+        // Measured against what providers carry rather than against the debt; see liquidate.
+        require(totalDeposits > lpLoss, "pool too small");
 
         if (collateral > 0) {
             sumS[currentScale][asset] += (collateral * productP) / totalDeposits;
@@ -867,7 +871,6 @@ contract SafixPool is Guardable {
         // unliquidatable position the minimum is there to prevent.
         if (position.debt - offset < minPositionDebt) offset = position.debt;
         require(offset > 0, "zero");
-        require(totalDeposits > offset, "pool too small");
         uint256 seized = (position.collateral * offset) / position.debt;
         // The redemption fee at close is charged on totalDrawn, so the share of the position the
         // liquidation takes has to leave with it. Without this, draws that were already settled by
@@ -887,6 +890,15 @@ contract SafixPool is Guardable {
         // land somewhere named rather than quietly diluting every provider.
         uint256 received = (poolShare * price1e18) / 1e30;
         uint256 lpLoss = _settleShortfall(borrower, asset, offset, received);
+        // The pool is too small only when providers would carry every last unit of their
+        // deposits: the product-sum accounting cannot represent a pool emptied to zero, because P
+        // would reach zero and every later deposit would compound to nothing. The requirement is on
+        // what providers actually carry — the offset less whatever the reserve paid — not on the
+        // debt, so a shortfall the reserve covers is not refused where a lone borrower's debt
+        // equals the deposits. Deposits never fall below the debt outstanding, so that boundary is
+        // the only place this can bind, and one more unit of deposits clears it. Checked after the
+        // settlement: a refusal reverts the settlement along with everything else.
+        require(totalDeposits > lpLoss, "pool too small");
 
         sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
         uint256 newP = (productP * (totalDeposits - lpLoss)) / totalDeposits;

@@ -8,20 +8,42 @@ import {Test} from "forge-std/Test.sol";
 import {SafixPool} from "../src/SafixPool.sol";
 import {MockERC20} from "../src/MockERC20.sol";
 
+/// @dev Drives every state-changing path on the pool that moves stable or collateral, including the
+///      reserve, the dust write-off, collateral withdrawal and fee collection. An invariant suite that
+///      never calls the newest code is the one place where green is misleading, so each action is
+///      bounded by the pool's own arithmetic rather than skipped: the suite runs with
+///      `fail_on_revert`, and a guard that returned early too often would hide a path as surely as
+///      leaving it out.
 contract PoolHandler is CommonBase, StdCheats, StdUtils {
     SafixPool public immutable pool;
     MockERC20 public immutable usdc;
     MockERC20 public immutable tbill;
+    /// @dev The pool's owner. With no timelock wired, the owner is also who `onlyTimelock` admits,
+    ///      which is how a fresh deployment is configured; the delay itself is tested elsewhere.
+    address public immutable owner;
 
     address[3] public lps;
     address[3] public borrowers;
+    address public immutable sponsor;
+    address public immutable treasury;
+
+    /// @dev How often each path actually executed, as opposed to being called and returning early.
+    uint256 public reserveFunded;
+    uint256 public reserveWithdrawn;
+    uint256 public feesCollected;
+    uint256 public collateralWithdrawn;
+    uint256 public absorbed;
 
     uint256 private constant BASE_PRICE = 100e18;
+    uint256 private constant MAX_LTV_BPS = 8000;
 
-    constructor(SafixPool pool_, MockERC20 usdc_, MockERC20 tbill_) {
+    constructor(SafixPool pool_, MockERC20 usdc_, MockERC20 tbill_, address owner_) {
         pool = pool_;
         usdc = usdc_;
         tbill = tbill_;
+        owner = owner_;
+        sponsor = vm.addr(0x3000);
+        treasury = vm.addr(0x4000);
         for (uint256 i = 0; i < 3; i++) {
             lps[i] = vm.addr(0x1000 + i);
             borrowers[i] = vm.addr(0x2000 + i);
@@ -32,7 +54,13 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
             tbill.approve(address(pool), type(uint256).max);
             vm.stopPrank();
         }
+        vm.prank(sponsor);
+        usdc.approve(address(pool), type(uint256).max);
     }
+
+    // --------------------------------------------------------------------------------------
+    // liquidity
+    // --------------------------------------------------------------------------------------
 
     function deposit(uint256 actorSeed, uint256 amount) external {
         address lp = lps[bound(actorSeed, 0, 2)];
@@ -52,6 +80,18 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         pool.withdraw(amount);
     }
 
+    function claim(uint256 actorSeed) external {
+        address lp = lps[bound(actorSeed, 0, 2)];
+        address[] memory assets = new address[](1);
+        assets[0] = address(tbill);
+        vm.prank(lp);
+        pool.claimGains(assets);
+    }
+
+    // --------------------------------------------------------------------------------------
+    // borrowing
+    // --------------------------------------------------------------------------------------
+
     function lockAndDraw(uint256 actorSeed, uint256 collateralAmount, uint256 drawAmount) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
         collateralAmount = bound(collateralAmount, 1e18, 500e18);
@@ -60,28 +100,58 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         pool.lockCollateral(address(tbill), collateralAmount);
 
         (uint256 collateral, uint256 debt,) = pool.positions(borrower, address(tbill));
+        uint256 feeBps = pool.originationFeeBps();
         uint256 value = pool.collateralValueStable(address(tbill), collateral);
-        uint256 capacity = (value * 8000) / 10_000;
+        uint256 capacity = (value * MAX_LTV_BPS) / 10_000;
         uint256 headroom = capacity > debt ? capacity - debt : 0;
-        uint256 maxDraw = (headroom * 10_000) / (10_000 + pool.originationFeeBps());
+        uint256 maxDraw = (headroom * 10_000) / (10_000 + feeBps);
         // Liquidity bounds the debt a draw creates, fee included, not the amount handed over.
-        uint256 byLiquidity = (pool.drawableLiquidity() * 10_000) / (10_000 + pool.originationFeeBps());
+        uint256 byLiquidity = (pool.drawableLiquidity() * 10_000) / (10_000 + feeBps);
         if (maxDraw > byLiquidity) maxDraw = byLiquidity;
-        if (maxDraw >= 1e6) {
-            pool.draw(address(tbill), bound(drawAmount, 1e6, maxDraw));
+        // A draw that would leave the position under the floor is refused, so the smallest draw is
+        // the one that lifts it onto the floor. The extra unit covers the fee's rounding down.
+        uint256 floor = pool.minPositionDebt();
+        uint256 minDraw = debt >= floor ? 1e6 : ((floor - debt) * 10_000) / (10_000 + feeBps) + 1;
+        if (minDraw < 1e6) minDraw = 1e6;
+        if (maxDraw >= minDraw) {
+            pool.draw(address(tbill), bound(drawAmount, minDraw, maxDraw));
         }
         vm.stopPrank();
     }
 
+    /// @dev Holds the whole debt before repaying, so a partial that would leave dust takes the
+    ///      escalation path rather than the refusal: both are the pool's to decide, and the
+    ///      escalation is the one that moves money.
     function repay(uint256 actorSeed, uint256 amount) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
         (, uint256 debt,) = pool.positions(borrower, address(tbill));
         if (debt == 0) return;
         amount = bound(amount, 1, debt);
         uint256 balance = usdc.balanceOf(borrower);
-        if (balance < amount) usdc.mint(borrower, amount - balance);
+        if (balance < debt) usdc.mint(borrower, debt - balance);
         vm.prank(borrower);
         pool.repay(address(tbill), amount);
+    }
+
+    /// @dev Withdraws only what the pool would release: everything when nothing was ever drawn,
+    ///      otherwise all but what keeps the position alive and the loan inside its LTV.
+    function withdrawCollateral(uint256 actorSeed, uint256 amount) external {
+        address borrower = borrowers[bound(actorSeed, 0, 2)];
+        (uint256 collateral, uint256 debt, uint256 totalDrawn) = pool.positions(borrower, address(tbill));
+        if (collateral == 0) return;
+        uint256 keep = (debt > 0 || totalDrawn > 0) ? 1 : 0;
+        if (debt > 0) {
+            (uint256 price,) = pool.currentPrice(address(tbill));
+            // Rounded up twice, against the pool's two roundings down.
+            uint256 neededValue = (debt * 10_000 + MAX_LTV_BPS - 1) / MAX_LTV_BPS;
+            uint256 needed = (neededValue * 1e30 + price - 1) / price;
+            if (needed > keep) keep = needed;
+        }
+        if (keep >= collateral) return;
+        amount = bound(amount, 1, collateral - keep);
+        vm.prank(borrower);
+        pool.withdrawCollateral(address(tbill), amount);
+        collateralWithdrawn += 1;
     }
 
     function closePosition(uint256 actorSeed) external {
@@ -100,23 +170,76 @@ contract PoolHandler is CommonBase, StdCheats, StdUtils {
         pool.setPrice(address(tbill), (BASE_PRICE * pct) / 100);
     }
 
+    // --------------------------------------------------------------------------------------
+    // losses
+    // --------------------------------------------------------------------------------------
+
+    /// @dev Mirrors the pool: a partial that would leave dust takes the whole position, and the
+    ///      only liquidation refused is one whose loss to providers would take their deposits to
+    ///      zero, which the product-sum accounting cannot represent.
     function liquidate(uint256 actorSeed, uint256 portion) external {
         address borrower = borrowers[bound(actorSeed, 0, 2)];
         if (!pool.isLiquidatable(borrower, address(tbill))) return;
-        (, uint256 debt,) = pool.positions(borrower, address(tbill));
-        uint256 total = pool.totalDeposits();
-        if (total <= 1 || debt == 0) return;
-        uint256 cap = debt < total - 1 ? debt : total - 1;
-        portion = bound(portion, 1, cap);
+        (uint256 collateral, uint256 debt,) = pool.positions(borrower, address(tbill));
+        portion = bound(portion, 1, debt);
+        uint256 offset = debt - portion < pool.minPositionDebt() ? debt : portion;
+        uint256 seized = (collateral * offset) / debt;
+        uint256 incentive = (seized * pool.liquidationIncentiveBps()) / 10_000;
+        (uint256 price,) = pool.currentPrice(address(tbill));
+        uint256 received = ((seized - incentive) * price) / 1e30;
+        if (pool.totalDeposits() <= _providerLoss(offset, received)) return;
         pool.liquidate(borrower, address(tbill), portion);
     }
 
-    function claim(uint256 actorSeed) external {
-        address lp = lps[bound(actorSeed, 0, 2)];
-        address[] memory assets = new address[](1);
-        assets[0] = address(tbill);
-        vm.prank(lp);
-        pool.claimGains(assets);
+    /// @dev The dust write-off, for a position liquidatable and worth less than the floor.
+    function absorbBadDebt(uint256 actorSeed) external {
+        address borrower = borrowers[bound(actorSeed, 0, 2)];
+        if (!pool.isLiquidatable(borrower, address(tbill))) return;
+        (uint256 collateral, uint256 debt,) = pool.positions(borrower, address(tbill));
+        (uint256 price,) = pool.currentPrice(address(tbill));
+        uint256 value = (collateral * price) / 1e30;
+        // Anything worth liquidating goes through liquidate, and the pool refuses it here.
+        if (value >= pool.minPositionDebt()) return;
+        if (pool.totalDeposits() <= _providerLoss(debt, value)) return;
+        vm.prank(owner);
+        pool.absorbBadDebt(borrower, address(tbill));
+        absorbed += 1;
+    }
+
+    /// @dev What providers carry when `offset` of debt is cancelled for `received` of value: the
+    ///      whole offset, less whatever the reserve pays towards a shortfall.
+    function _providerLoss(uint256 offset, uint256 received) internal view returns (uint256) {
+        if (received >= offset) return offset;
+        uint256 shortfall = offset - received;
+        uint256 reserve = pool.reserve();
+        return offset - (shortfall > reserve ? reserve : shortfall);
+    }
+
+    // --------------------------------------------------------------------------------------
+    // the reserve and the fees
+    // --------------------------------------------------------------------------------------
+
+    function fundReserve(uint256 amount) external {
+        amount = bound(amount, 1, 50_000e6);
+        usdc.mint(sponsor, amount);
+        vm.prank(sponsor);
+        pool.fundReserve(amount);
+        reserveFunded += 1;
+    }
+
+    function withdrawReserve(uint256 amount) external {
+        uint256 reserve = pool.reserve();
+        if (reserve == 0) return;
+        amount = bound(amount, 1, reserve);
+        vm.prank(owner);
+        pool.withdrawReserve(treasury, amount);
+        reserveWithdrawn += 1;
+    }
+
+    function collectProtocolFees() external {
+        vm.prank(owner);
+        pool.collectProtocolFees(treasury);
+        feesCollected += 1;
     }
 
     function lpAt(uint256 index) external view returns (address) {
@@ -134,6 +257,11 @@ contract PoolInvariantsTest is Test {
     MockERC20 internal tbill;
     PoolHandler internal handler;
 
+    /// @dev A position floor, so the dust write-off has a definition of dust to act on and is
+    ///      reachable at all, and so the floor's own paths — the draw minimum, the repayment that
+    ///      escalates, the liquidation that takes the whole position — are in every sequence.
+    uint256 internal constant FLOOR = 500e6;
+
     function setUp() public {
         usdc = new MockERC20("Mock USDC", "USDC", 6);
         tbill = new MockERC20("Tokenized treasury 3M", "tBILL", 18);
@@ -142,7 +270,8 @@ contract PoolInvariantsTest is Test {
         // Route a quarter of every origination fee to the reserve so the randomised sequences
         // exercise funding it, spending it on a shortfall, and running it dry.
         pool.setReserveFeeShare(2_500);
-        handler = new PoolHandler(pool, usdc, tbill);
+        pool.setRiskLimits(0, FLOOR, 0);
+        handler = new PoolHandler(pool, usdc, tbill, address(this));
         pool.setPriceUpdater(address(handler));
         targetContract(address(handler));
     }
@@ -199,5 +328,45 @@ contract PoolInvariantsTest is Test {
     function invariant_productStaysInBand() public view {
         assertGe(pool.productP(), 1e18);
         assertLe(pool.productP(), 1e27);
+    }
+
+    /// @dev What belongs to neither providers nor borrowers — protocol fees and the reserve — is
+    ///      always backed by stable the pool actually holds; by conservation, provider deposits
+    ///      never fall below the debt outstanding. So collecting fees or withdrawing the reserve
+    ///      can never pay out a provider's money, and the only place a liquidation can meet the
+    ///      "pool too small" refusal is the boundary where deposits equal the debt exactly.
+    function invariant_committedClaimsAreBacked() public view {
+        assertGe(usdc.balanceOf(address(pool)), pool.protocolFees() + pool.reserve(), "fees or reserve unbacked");
+        assertGe(pool.totalDeposits(), _sumDebt(), "deposits fell below the debt");
+    }
+
+    /// @dev The fuzzer only proves something about the paths it actually executes. This drives one
+    ///      short sequence through the handler and requires every path the reserve work added to
+    ///      run to completion, so a guard that quietly made one unreachable fails here rather than
+    ///      leaving the suite green over code it never touched.
+    function testTheHandlerReachesEveryPathItDrives() public {
+        handler.deposit(0, 100_000e6);
+        // A small position, drawn just onto the floor, that a fall to 40% makes dust.
+        handler.lockAndDraw(0, 8e18, 0);
+        // A large one with room to release collateral against its loan.
+        handler.lockAndDraw(1, 500e18, 0);
+
+        handler.fundReserve(1_000e6);
+        handler.withdrawReserve(100e6);
+        handler.collectProtocolFees();
+        handler.withdrawCollateral(1, 1);
+
+        handler.movePrice(40);
+        handler.absorbBadDebt(0);
+
+        assertEq(handler.reserveFunded(), 1, "fundReserve never ran");
+        assertEq(handler.reserveWithdrawn(), 1, "withdrawReserve never ran");
+        assertEq(handler.feesCollected(), 1, "collectProtocolFees never ran");
+        assertEq(handler.collateralWithdrawn(), 1, "withdrawCollateral never ran");
+        assertEq(handler.absorbed(), 1, "absorbBadDebt never ran");
+
+        invariant_usdcConservation();
+        invariant_accumulatorsMatchPositions();
+        invariant_committedClaimsAreBacked();
     }
 }

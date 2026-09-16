@@ -120,16 +120,52 @@ contract BadDebtTest is Test {
         _assertSolvent();
     }
 
-    function testReserveShareIsCappedAndOwnerOnly() public {
+    function testReserveShareIsCappedAndOutsidersReachNeitherKnob() public {
         vm.expectRevert(bytes("share too high"));
         pool.setReserveFeeShare(5_001);
 
         vm.startPrank(outsider);
         vm.expectRevert(bytes("not timelock"));
         pool.setReserveFeeShare(100);
-        vm.expectRevert(bytes("not owner"));
+        // Taking money out of the reserve waits for the timelock too, once one is wired; the delay
+        // itself is tested in Timelock.t.sol.
+        vm.expectRevert(bytes("not timelock"));
         pool.withdrawReserve(outsider, 1);
         vm.stopPrank();
+    }
+
+    function testPullingTheReserveBeforeAGapDownMovesTheLossOntoProviders() public {
+        vm.prank(sponsor);
+        pool.fundReserve(10_000e6);
+        uint256 debt = _openPosition();
+        uint256 depositsBefore = pool.totalDeposits();
+
+        // 100 tBILL gaps to 70. Seized 100, incentive 0.5, so the pool receives 99.5 at 70 = 6,965
+        // against 7,999.8 of debt: a 1,034.8 shortfall.
+        uint256 received = 6_965e6;
+        uint256 shortfall = debt - received;
+        uint256 beforeTheGap = vm.snapshotState();
+
+        // With the reserve in place, it takes the shortfall.
+        pool.setPrice(address(tbill), 70e18);
+        vm.prank(keeper);
+        pool.liquidate(borrower, address(tbill), type(uint256).max);
+        assertEq(pool.badDebt(), 0);
+        assertEq(pool.reserve(), 10_000e6 - shortfall);
+        assertEq(depositsBefore - pool.totalDeposits(), received);
+        _assertSolvent();
+
+        // Pulled in the block before, the identical liquidation lands on providers instead. This is
+        // what withdrawReserve could do with no notice, and why it now waits for the timelock.
+        vm.revertToState(beforeTheGap);
+        pool.withdrawReserve(treasury, 10_000e6);
+        pool.setPrice(address(tbill), 70e18);
+        vm.prank(keeper);
+        pool.liquidate(borrower, address(tbill), type(uint256).max);
+        assertEq(pool.badDebt(), shortfall);
+        assertEq(pool.reserve(), 0);
+        assertEq(depositsBefore - pool.totalDeposits(), debt);
+        _assertSolvent();
     }
 
     function testCollectingProtocolFeesLeavesTheReserveAlone() public {

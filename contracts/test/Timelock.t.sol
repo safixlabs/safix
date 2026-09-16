@@ -294,6 +294,38 @@ contract TimelockTest is Test {
         assertEq(price, 99e18);
     }
 
+    function testTheReserveCannotBePulledWithoutNotice() public {
+        // Funding stays open to anyone and instant: adding to the buffer never hurts a lender.
+        vm.prank(provider);
+        pool.fundReserve(10_000e6);
+        assertEq(pool.reserve(), 10_000e6);
+
+        // The multisig owns the pool and still cannot take the buffer back in one transaction.
+        // Emptying it touches no deposit, but it decides who carries the next shortfall.
+        vm.prank(multisig);
+        vm.expectRevert(bytes("not timelock"));
+        pool.withdrawReserve(treasury, 10_000e6);
+
+        // It has to announce it. The calldata sits in the Queued event for the whole delay, so a
+        // provider, or whoever funded the reserve, sees it coming and can leave first.
+        bytes memory data = abi.encodeCall(SafixPool.withdrawReserve, (treasury, 10_000e6));
+        vm.prank(multisig);
+        bytes32 id = timelock.queue(address(pool), data, SALT);
+
+        vm.warp(block.timestamp + DELAY - 1);
+        vm.prank(multisig);
+        vm.expectRevert(bytes("too early"));
+        timelock.execute(address(pool), data, SALT);
+        assertEq(pool.reserve(), 10_000e6, "the reserve moved before the delay ran out");
+
+        vm.warp(block.timestamp + 1);
+        assertTrue(timelock.isReady(id));
+        vm.prank(multisig);
+        timelock.execute(address(pool), data, SALT);
+        assertEq(pool.reserve(), 0);
+        assertEq(usdc.balanceOf(treasury), 10_000e6);
+    }
+
     // --------------------------------------------------------------------------------------
     // handover
     // --------------------------------------------------------------------------------------

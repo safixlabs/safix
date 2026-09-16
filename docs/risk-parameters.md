@@ -99,11 +99,11 @@ Two alternatives were considered and rejected. Holding the loss against protocol
 
 **`reserveFeeShareBps` starts at 2,500** — a quarter of every origination fee. This ties the buffer to the volume that creates the risk: the more the pool lends, the faster its own defence grows. It is capped at 5,000 in the contract, because past half the protocol stops funding its own operation, and a reserve nobody can afford to operate around is not risk management.
 
-**The reserve is seeded at 2% of pool size at deploy**, so the first gap-down does not land on providers before fees have had time to build it. `fundReserve` is open to anyone, so a partner or the protocol can top it up without a privileged path; `withdrawReserve` is owner-only and cannot reach further than the reserve holds.
+**The reserve is seeded at 2% of pool size at deploy**, so the first gap-down does not land on providers before fees have had time to build it. `fundReserve` is open to anyone, so a partner or the protocol can top it up without a privileged path; `withdrawReserve` goes through the timelock and cannot reach further than the reserve holds. Emptying the reserve touches no deposit, but it decides who carries the next shortfall: on the same position, a 1,034.8 shortfall lands on the reserve, or, with the reserve pulled a block earlier, on providers. Taking money out therefore waits like every other change to a lender's exposure. Putting money in does not, because a larger buffer never hurts anyone.
 
 The reserve sits in the pool's balance but is excluded from available liquidity, exactly as protocol fees are. It is neither lendable nor withdrawable by providers.
 
-**Target size.** The reserve should cover a **full gap-down of the largest single position the caps allow**, at a 50% collateral price shock. With class C capped at 15% of the pool and a 55% LTV, that is roughly 7% of pool size. Below that target, raise `reserveFeeShareBps`; sustained above it, the excess may be withdrawn to the treasury. Reviewed on the same quarterly cycle as everything else here.
+**Target size.** The reserve should cover a **full gap-down of the largest single position the caps allow**, at a 50% collateral price shock. With class C capped at 15% of the pool and a 55% LTV, that is roughly 7% of pool size. Below that target, raise `reserveFeeShareBps`; sustained above it, the excess may be withdrawn to the treasury, through the timelock. Reviewed on the same quarterly cycle as everything else here.
 
 **Underwater dust.** A position whose remaining collateral is worth less than the gas to liquidate it will never be taken by a keeper: their incentive is a share of nearly nothing. `absorbBadDebt` lets the owner clear it — the pool takes the collateral, cancels the debt, and books the gap through the same reserve-then-socialise path, with no keeper incentive carved out because there is no keeper. It only accepts a position that is both liquidatable and below `minPositionDebt` in collateral value, so it can never close a healthy loan.
 
@@ -134,7 +134,8 @@ An asset is never enabled and left uncapped. `configureAsset` followed by nothin
 | Pausing | guardian alone | **no** |
 | Unpausing | multisig, directly | **no** |
 | Guardian appointment, price updater, passport registry | multisig, directly | no |
-| Collecting fees, withdrawing from the reserve | multisig, directly | no |
+| Collecting fees | multisig, directly | no |
+| Withdrawing from the reserve | multisig, through the timelock | yes |
 | Posting a price | price updater, every heartbeat | no |
 | Onboarding a new asset | multisig, through the timelock, with the onboarding record above completed first | yes |
 
