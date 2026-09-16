@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {Script, console} from "forge-std/Script.sol";
 import {SafixPool} from "../src/SafixPool.sol";
+import {IAggregatorV3} from "../src/interfaces/IAggregatorV3.sol";
 import {SafixTimelock} from "../src/SafixTimelock.sol";
 import {PartnershipDesk} from "../src/PartnershipDesk.sol";
 import {PassportRegistry} from "../src/PassportRegistry.sol";
@@ -76,8 +77,18 @@ contract Deploy is Script {
             pool.setAssetCaps(realAsset, realDebtCap, realCollateralCap);
         }
 
-        // The L2 sequencer uptime feed is deliberately left unset: Chainlink has not published one
-        // for Robinhood Chain. setSequencerUptimeFeed wires it the day one exists, with no redeploy.
+        // The L2 sequencer uptime feed. Chainlink has not published one for Robinhood Chain, and its
+        // documentation says it is no longer adding them to new networks; scripts/check-sequencer-feed.mjs
+        // asks again every week and keeps the answer on #38. The day an address exists it is wired
+        // here at deploy, or afterwards by the owner with setSequencerUptimeFeed, which needs neither a
+        // redeploy nor the timelock.
+        //
+        // The grace period comes with it, never from a default: how long after the sequencer returns
+        // before a price is trusted again is a decision. And the address is checked to be a status
+        // feed before it is wired. A price feed pasted here by mistake answers something other than 0
+        // or 1, which the pool reads as "sequencer down" — every price on every asset refused, from
+        // the first block.
+        _wireSequencerFeed(pool);
 
         PassportRegistry registry = new PassportRegistry();
         PartnershipDesk desk = new PartnershipDesk(address(usdc));
@@ -148,5 +159,18 @@ contract Deploy is Script {
         console.log("timelock", timelockAddress);
         console.log("realAsset", realAsset);
         console.log("auditor", auditor);
+    }
+
+    /// @dev Wires the L2 sequencer uptime feed when one is given. Kept out of `run`, which already
+    ///      holds as many locals as the stack allows.
+    function _wireSequencerFeed(SafixPool pool) internal {
+        address sequencerFeed = vm.envOr("SEQUENCER_UPTIME_FEED", address(0));
+        if (sequencerFeed == address(0)) return;
+        uint256 sequencerGrace = vm.envOr("SEQUENCER_GRACE_PERIOD", uint256(0));
+        require(sequencerGrace > 0, "SEQUENCER_GRACE_PERIOD required alongside SEQUENCER_UPTIME_FEED");
+        (, int256 sequencerStatus, uint256 statusSince,,) = IAggregatorV3(sequencerFeed).latestRoundData();
+        require(sequencerStatus == 0 || sequencerStatus == 1, "SEQUENCER_UPTIME_FEED is not a status feed");
+        require(statusSince > 0, "SEQUENCER_UPTIME_FEED has never reported");
+        pool.setSequencerUptimeFeed(sequencerFeed, sequencerGrace);
     }
 }

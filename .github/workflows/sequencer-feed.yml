@@ -1,0 +1,34 @@
+name: sequencer uptime feed
+
+# Chainlink has not published an L2 sequencer uptime feed for Robinhood Chain, and says it is no
+# longer adding them to new networks. That is an answer that can change without anybody here
+# noticing, so it is asked again every week rather than recorded once (safixlabs/safix#38).
+#
+# The run keeps one comment on #38 current with the latest answer and the evidence behind it. It
+# fails the day a feed is published, so the change is impossible to miss, and it fails if it cannot
+# reach Chainlink's data at all rather than reporting "none" on a check it never made.
+
+on:
+  schedule:
+    # Mondays at 06:17 UTC, before the 10:00 Istanbul on-call handover in monitor/README.md, so the
+    # answer is fresh when the week's on-call picks up.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The issue the answer is kept on. The script reads the repository from the environment the
+      # runner provides.
+      - run: node scripts/check-sequencer-feed.mjs --report 38
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
