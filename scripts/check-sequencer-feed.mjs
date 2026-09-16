@@ -3,6 +3,13 @@
 //   node scripts/check-sequencer-feed.mjs                       print the answer
 //   node scripts/check-sequencer-feed.mjs --report 38           and keep one comment on #38 current
 //   node scripts/check-sequencer-feed.mjs --report 38 --dry-run print that comment instead of posting it
+//   node scripts/check-sequencer-feed.mjs --watchdog            fail if the weekly check has stopped
+//
+// The watchdog exists because a check that stops running does not fail. GitHub disables scheduled
+// workflows in a public repository after 60 days without activity, and a disabled workflow runs on
+// no trigger at all, so the guard cannot live inside it. The contracts workflow runs it on every push
+// and pull request: it fails while sequencer-feed.yml is disabled, or when its last run is older than
+// a week and a day.
 //
 // Exit codes: 0 when no feed is published and the check provably worked, 2 when a feed is published
 // and has to be wired, 1 when the check could not be made. A check that could not read its sources
@@ -15,6 +22,9 @@
 // quietly finding nothing.
 
 import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const CHAIN_ID = 4663
 const DIRECTORY = "https://reference-data-directory.vercel.app/feeds-robinhood-mainnet.json"
@@ -24,7 +34,31 @@ const DOCS = "https://docs.chain.link/data-feeds/l2-sequencer-feeds"
 const MARKER = "<!-- sequencer-feed-check -->"
 const TIMEOUT_MS = 20_000
 
+const WORKFLOW = "sequencer-feed.yml"
+// When the schedule fires, and how late a run may be before the watchdog calls it stopped: a week,
+// plus a day for GitHub's own scheduling delay.
+const SCHEDULE = { weekday: 1, hour: 6, minute: 17 }
+const MAX_RUN_AGE_MS = 8 * 24 * 60 * 60 * 1000
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const workflowCron = readFileSync(join(root, ".github", "workflows", WORKFLOW), "utf8").match(/cron:\s*"([^"]+)"/)?.[1]
+if (workflowCron !== `${SCHEDULE.minute} ${SCHEDULE.hour} * * ${SCHEDULE.weekday}`) {
+  console.error(`check-sequencer-feed: ${WORKFLOW} runs on "${workflowCron}", which this script does not describe`)
+  process.exit(1)
+}
+
+/** The first scheduled run strictly after `from`. */
+function nextScheduledRun(from) {
+  const next = new Date(from)
+  next.setUTCHours(SCHEDULE.hour, SCHEDULE.minute, 0, 0)
+  const days = (SCHEDULE.weekday - next.getUTCDay() + 7) % 7
+  next.setUTCDate(next.getUTCDate() + days)
+  if (next <= from) next.setUTCDate(next.getUTCDate() + 7)
+  return next
+}
+
 const args = process.argv.slice(2)
+const watchdog = args.includes("--watchdog")
 const reportIssue = args.includes("--report") ? Number(args[args.indexOf("--report") + 1]) : null
 const dryRun = args.includes("--dry-run")
 
@@ -137,6 +171,8 @@ function commentBody(result) {
     "",
     `Checked ${checkedAt} by ${run}. This comment is rewritten on every weekly check, so it always carries the latest answer.`,
     "",
+    `Next scheduled check: **${nextScheduledRun(new Date(checkedAt)).toISOString().replace(/:00\.000Z$/, " UTC")}**. If that is in the past, the weekly check has stopped rather than failed: GitHub disables scheduled workflows in a public repository after 60 days without activity. Re-enable it with \`gh workflow enable ${WORKFLOW}\`; until then the \`contracts\` workflow fails on every push.`,
+    "",
     "| Source | What it says |",
     "| --- | --- |",
     `| [Reference data directory](${DIRECTORY}), the data behind Chainlink's documentation | ${directory.listed} feeds listed for chain ${CHAIN_ID}; ${
@@ -188,6 +224,44 @@ async function report(issue, body) {
   const written = await response.json()
   console.log(`check-sequencer-feed: ${existing ? "updated" : "posted"} ${written.html_url}`)
 }
+
+async function checkAlive() {
+  const token = process.env.GITHUB_TOKEN
+  if (!token) inconclusive("--watchdog needs GITHUB_TOKEN")
+  const repo = repository()
+  const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" }
+  const get = async path => {
+    const response = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${WORKFLOW}${path}`, {
+      headers,
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+    if (!response.ok) inconclusive(`reading ${WORKFLOW}${path}: HTTP ${response.status}`)
+    return response.json()
+  }
+  const workflow = await get("")
+  const { workflow_runs: runs } = await get("/runs?status=completed&per_page=1")
+  const now = Date.now()
+  const last = runs[0] ?? null
+  const problems = []
+  if (workflow.state !== "active") {
+    problems.push(`${WORKFLOW} is ${workflow.state}; re-enable it with: gh workflow enable ${WORKFLOW}`)
+  }
+  if (last === null) {
+    if (now - Date.parse(workflow.created_at) > MAX_RUN_AGE_MS) problems.push(`${WORKFLOW} has never completed a run`)
+  } else if (now - Date.parse(last.created_at) > MAX_RUN_AGE_MS) {
+    problems.push(`${WORKFLOW} last ran ${last.created_at}, more than eight days ago`)
+  }
+  const lastText = last ? `last run ${last.created_at} (${last.event}, ${last.conclusion})` : "no completed run yet"
+  if (problems.length > 0) {
+    console.error(`check-sequencer-feed: the weekly check has stopped · state ${workflow.state} · ${lastText}`)
+    for (const problem of problems) console.error(`  - ${problem}`)
+    process.exit(1)
+  }
+  console.log(`check-sequencer-feed: the weekly check is running · state ${workflow.state} · ${lastText}`)
+  process.exit(0)
+}
+
+if (watchdog) await checkAlive()
 
 const directory = await checkDirectory()
 const docs = await checkDocs()

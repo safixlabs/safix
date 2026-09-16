@@ -30,3 +30,20 @@ jobs:
       # SECURITY.md is generated from security.config.json and must not be
       # edited by hand.
       - run: node scripts/check-security.mjs
+
+  # The weekly sequencer uptime feed check (#38) stops silently if GitHub disables its schedule,
+  # which it does to a public repository after 60 days without activity, and a disabled workflow
+  # runs on no trigger. So the guard lives here, on every push and pull request.
+  sequencer-check-alive:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-sequencer-feed.mjs --watchdog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
