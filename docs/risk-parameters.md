@@ -87,6 +87,8 @@ The classes do not have to sum to 100%; `globalDebtCeiling` is what stops the to
 
 **`minPositionDebt`** is set to **500 stable units**, reviewed if gas on the chain changes by an order of magnitude. The number is a multiple of what a liquidation costs to send, so that seizing a position is always worth more than the transaction that seizes it. Below this a position would sit unliquidatable, which is worse than not opening it.
 
+Raising it applies to positions that are already open. A repayment that would leave a position under the floor takes the whole debt instead of being refused, so a raise narrows how an open position can be repaid without closing any exit — and the floor is never a reason a borrower cannot cure an unhealthy position by paying it down.
+
 ## Bad debt and the reserve
 
 When a price gaps through the liquidation threshold, the pool cancels more debt than the collateral it receives is worth. That gap is a real loss and it has to land somewhere named.

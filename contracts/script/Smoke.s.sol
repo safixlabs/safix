@@ -117,6 +117,13 @@ contract Smoke is Script {
             plan.repayAmount > 0 && plan.repayAmount < plan.drawAmount + originationFee,
             "REPAY_AMOUNT must be a partial repayment"
         );
+        // A repayment that would leave less than the floor takes the whole debt instead of reverting,
+        // so a REPAY_AMOUNT in that band would still succeed, as a full repayment, and this run would
+        // report a partial repayment it never made.
+        require(
+            plan.drawAmount + originationFee - plan.repayAmount >= pool.minPositionDebt(),
+            "REPAY_AMOUNT must leave at least minPositionDebt"
+        );
 
         // The borrower pays the deposit and both fees out of pocket; the drawn amount funds the rest.
         uint256 redemptionFee = (plan.drawAmount * pool.redemptionFeeBps()) / BPS;

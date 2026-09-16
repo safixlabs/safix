@@ -245,7 +245,7 @@ contract RiskCapsTest is Test {
         assertEq(debt, minimum);
     }
 
-    function testRepayingToDustIsRefusedButRepayingInFullIsNot() public {
+    function testRepayingToDustTakesTheWholeDebtButLeavingTheFloorDoesNot() public {
         pool.setRiskLimits(0, 1_000e6, 0);
 
         vm.startPrank(borrower);
@@ -253,20 +253,21 @@ contract RiskCapsTest is Test {
         pool.draw(address(tbill), 5_000e6);
         (, uint256 debt,) = pool.positions(borrower, address(tbill));
 
-        // Leaving 1 unit behind would be dust.
-        vm.expectRevert(bytes("position too small"));
-        pool.repay(address(tbill), debt - 1);
-
-        // Leaving exactly the minimum is fine.
+        // Leaving exactly the minimum is a partial repayment, and takes exactly what was asked.
         pool.repay(address(tbill), debt - 1_000e6);
-
-        // And clearing it entirely is always allowed.
         (, uint256 remaining,) = pool.positions(borrower, address(tbill));
-        pool.repay(address(tbill), remaining);
+        assertEq(remaining, 1_000e6);
+
+        // Leaving one unit less would be dust, so the repayment takes the whole debt instead, as a
+        // liquidation would. The position ends at zero, never in between. The refusal that remains
+        // when the borrower cannot cover the whole debt is tested in RepayFloor.t.sol.
+        uint256 balanceBefore = usdc.balanceOf(borrower);
+        pool.repay(address(tbill), 1);
         vm.stopPrank();
 
         (, uint256 finalDebt,) = pool.positions(borrower, address(tbill));
         assertEq(finalDebt, 0);
+        assertEq(balanceBefore - usdc.balanceOf(borrower), 1_000e6);
     }
 
     function testClosePositionIsNeverBlockedByTheMinimum() public {

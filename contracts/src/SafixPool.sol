@@ -726,9 +726,23 @@ contract SafixPool is Guardable {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.debt, "bad amount");
         uint256 remaining = position.debt - amount;
-        // Repaying to nothing is always allowed; repaying to dust is not, or the position would be
-        // left too small to be worth liquidating. Repaying in full is one call away either way.
-        require(remaining == 0 || remaining >= minPositionDebt, "position too small");
+        // A repayment that would leave dust takes the whole debt instead, the way `liquidate`
+        // takes the whole position rather than leave dust behind. Refusing it would refuse the one
+        // repayment that cures an unhealthy position whenever the floor sits above the healthy
+        // debt, and would leave a position under a floor raised after it opened repayable only in
+        // full, by a second call. The position still ends at zero or at the floor and above, never
+        // in between. It escalates only when the borrower has approved and holds the whole debt;
+        // otherwise the refusal stands with its reason, rather than surfacing as a token error
+        // about an allowance nobody asked for.
+        if (remaining != 0 && remaining < minPositionDebt) {
+            uint256 whole = position.debt;
+            require(
+                stable.allowance(msg.sender, address(this)) >= whole && stable.balanceOf(msg.sender) >= whole,
+                "position too small"
+            );
+            amount = whole;
+            remaining = 0;
+        }
         position.debt = remaining;
         assetDebt[asset] -= amount;
         totalDebt -= amount;
