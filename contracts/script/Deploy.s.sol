@@ -12,6 +12,18 @@ import {MockERC20} from "../src/MockERC20.sol";
 contract Deploy is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+
+        // This script deploys a chain's worth of test assets: a settlement token it
+        // mints itself, three wrappers standing in for collateral, prices typed in
+        // here, and a pool seeded from thin air. That is what a testnet needs and
+        // exactly what mainnet must never see, where settlement is USDG and the
+        // collateral is the chain's own tokenized equities with their own feeds.
+        //
+        // Nothing here distinguishes the two, so rather than let a mainnet run make
+        // a protocol out of test tokens, it stops. The mainnet path is safixlabs/safix#13
+        // and the assets it lends against are safixlabs/safix#40.
+        require(block.chainid != 4663, "this script deploys test assets; mainnet needs its own, see #13");
+
         vm.startBroadcast(deployerKey);
 
         MockERC20 usdc = new MockERC20("Safix Test USD", "tUSDG", 6);
