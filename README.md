@@ -1,3 +1,5 @@
+![Safix](docs/assets/banner.png)
+
 # Safix
 
 Private credit network for tokenized stocks and real-world assets.
