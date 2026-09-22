@@ -1,0 +1,55 @@
+name: keeper
+
+# Keeps the testnet usable without anything being hosted.
+#
+# A price on this pool goes stale by sitting still, and while it is stale the pool
+# refuses every draw, every collateral withdrawal and every liquidation. Until the
+# keeper runs somewhere of its own, a scheduled pass does the same work: it writes
+# any price that is halfway through the age its asset allows, and liquidates any
+# position that has fallen through its threshold.
+#
+# The tightest window is bNVDA's, which allows an hour. The keeper writes at the
+# half hour, and this runs four times inside it, so a run can be delayed or skipped
+# and the price still lands before the pool starts refusing anything. GitHub does
+# not promise a cron will fire on time, which is exactly why the margin is there.
+#
+# This is testnet only, and deliberately: PRIVATE_KEY here can post prices and
+# liquidate on that pool and nothing else. A key with any authority over real money
+# does not belong in a CI secret, and this workflow must never be pointed at one.
+#
+# It also stops on its own. GitHub disables a scheduled workflow after 60 days
+# without a push, so a quiet repository silently stops keeping the pool alive.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  # Two passes at once would both read the same position and both try to liquidate
+  # it, and the second would pay gas to be told it is already gone.
+  group: keeper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: keeper/package-lock.json
+      - run: npm ci
+        working-directory: keeper
+      - name: One pass over prices and positions
+        working-directory: keeper
+        env:
+          CONFIG: ./config.testnet.json
+          PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: npm run scan

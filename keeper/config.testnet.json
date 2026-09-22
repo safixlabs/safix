@@ -1,0 +1,28 @@
+{
+  "$comment": "The testnet pool, committed so a scheduled run needs no secret but the key. Prices are posted from this file rather than read from a market: on a testnet the number matters less than its age, because a price the pool will not act on refuses every draw. Reposting the same figure refreshes the timestamp without moving the price past its deviation guard.",
+  "rpcUrl": "https://rpc.testnet.chain.robinhood.com",
+  "poolAddress": "0x83feb836aab98eec343690209db227f1b085c283",
+  "deployBlock": 120348656,
+  "intervalMs": 15000,
+  "logChunkBlocks": 50000,
+  "instanceId": "keeper-scheduled",
+  "prices": {
+    "0xb89a04c644f6e844ba81eddc0de2a803fa737df0": 100.42,
+    "0x11e7003a43182104672e39a2d4787549119cf62d": 172.35,
+    "0x361edbf3901366ac3e74b2ff2a0eafbdd6899479": 3392.8
+  },
+  "alerts": {
+    "cooldownMs": 900000,
+    "stuckScans": 3
+  },
+  "gas": {
+    "warnLiquidations": 200,
+    "criticalLiquidations": 50,
+    "liquidationGas": 150000
+  },
+  "indexer": {
+    "url": null,
+    "timeoutMs": 3000,
+    "maxLagBlocks": 5000
+  }
+}

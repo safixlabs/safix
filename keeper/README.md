@@ -116,3 +116,33 @@ A price the pool refuses — outside the asset's band, or moving further than it
 It is permissionless. Liquidating needs no allowlist, no passport and no relationship with the protocol — only a funded key. The pool is better off with several independent keepers than with one, so competition here is the design rather than a tolerated side effect.
 
 Config fields: `rpcUrl`, `poolAddress`, optional `deployBlock` (start of the event scan), `intervalMs`, `logChunkBlocks` (largest span per `getLogs`, for RPCs that cap it), `instanceId`, `prices` as checksummed asset address to USD price, plus the `alerts`, `gas` and `indexer` blocks described above.
+
+## Running it without a host
+
+`.github/workflows/keeper.yml` runs one pass every fifteen minutes. It does the
+same work a hosted keeper does, and needs nothing deployed: prices that are ageing
+get written, positions that have fallen through their threshold get liquidated.
+
+Two secrets on the repository:
+
+| Secret | What it is |
+| --- | --- |
+| `KEEPER_PRIVATE_KEY` | The key the pool accepts for `setPrice`, which is either the owner or the address in `priceUpdater()`. It also pays for liquidations, so it needs gas. |
+| `ALERT_WEBHOOK_URL` | Optional. Without it the alerts only reach the run's log, where nobody is looking. |
+
+Three things to know before relying on it.
+
+**It is for the testnet and nothing else.** That key can post prices and liquidate
+on the pool it is pointed at. A key with any authority over real money does not
+belong in a CI secret, whatever the convenience.
+
+**A cron is not a promise.** GitHub runs a schedule when it has capacity, and
+delays of several minutes are ordinary. The margin is why the pass runs four times
+inside the tightest window rather than once.
+
+**It stops on its own.** GitHub disables a scheduled workflow after sixty days
+without a push, and says so only by email. A quiet repository stops keeping the
+pool alive without anything appearing to fail.
+
+A hosted keeper has none of those three caveats, which is why `fly.toml` is still
+here and this is the way to keep a testnet open until it runs.
