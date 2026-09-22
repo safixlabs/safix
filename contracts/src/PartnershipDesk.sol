@@ -95,6 +95,10 @@ contract PartnershipDesk is Guardable {
         owner = msg.sender;
     }
 
+    /// @notice Hands the desk's owner role to another address.
+    /// @dev    The owner creates, activates and cancels partnerships, so this is the whole of the
+    ///         desk's operational authority. Zero is refused because it is not a handover, it is an
+    ///         abandonment: every partnership still in funding would be stuck there.
     function setOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "zero owner");
         owner = newOwner;
@@ -124,11 +128,22 @@ contract PartnershipDesk is Guardable {
         _unpause(actions, msg.sender);
     }
 
+    /// @notice Sets the auditor whose approval a settlement needs.
+    /// @dev    Behind the timelock rather than the owner, because the auditor is what stands
+    ///         between an operator's own report of its returns and the money moving on it. An owner
+    ///         who could swap the auditor at will would be approving its own settlements through an
+    ///         address of its choosing. Zero is allowed and means settlement is closed until one is
+    ///         appointed, which is a safer resting state than an auditor nobody chose.
     function setAuditor(address auditor_) external onlyTimelock {
         auditor = auditor_;
         emit AuditorSet(auditor_);
     }
 
+    /// @notice Records the auditor's approval for a partnership to settle.
+    /// @dev    Separate from `settle` and made by a different party on purpose: the operator states
+    ///         what came back, and somebody other than the operator agrees before any of it is paid
+    ///         out. Only an active partnership can be approved, so approval cannot be banked in
+    ///         advance of the partnership it belongs to.
     function approveSettlement(uint256 id) external {
         require(msg.sender == auditor, "not auditor");
         require(partnerships[id].status == Status.Active, "not active");
@@ -136,6 +151,15 @@ contract PartnershipDesk is Guardable {
         emit SettlementApproved(id, msg.sender);
     }
 
+    /// @notice Opens a partnership for funding.
+    /// @param operator          who receives the capital and reports what comes back
+    /// @param operatorShareBps  the operator's cut of the profit, in basis points
+    /// @param fundingGoal       the most that may be raised, and what activation sends
+    /// @param fundingDeadline   after which nobody may fund, and a funder may cancel it
+    /// @param reportingDeadline after which the operator may be declared in default
+    /// @dev    The two deadlines are the funders' only protection against an operator that goes
+    ///         quiet, which is why the second has to fall after the first: capital that goes out
+    ///         needs a date by which it is supposed to come back.
     function createPartnership(
         address operator,
         uint16 operatorShareBps,
@@ -164,6 +188,10 @@ contract PartnershipDesk is Guardable {
         emit PartnershipCreated(id, operator, operatorShareBps, fundingGoal, fundingDeadline);
     }
 
+    /// @notice Contributes to a partnership still in its funding stage.
+    /// @dev    Contributions are recorded per funder, because that is what a refund and a payout
+    ///         are computed from. The goal is a ceiling rather than a target: funding stops at it
+    ///         exactly, so nobody's contribution is partly accepted.
     function fund(uint256 id, uint256 amount) external nonReentrant {
         require(!isPaused(PAUSE_FUNDING), "funding paused");
         Partnership storage partnership = partnerships[id];
@@ -176,6 +204,11 @@ contract PartnershipDesk is Guardable {
         emit Funded(id, msg.sender, amount);
     }
 
+    /// @notice Sends what was raised to the operator and starts the partnership.
+    /// @dev    The point of no return for the funders: from here their capital is with the operator
+    ///         and comes back only through `reportReturn`, or not at all through `declareDefault`.
+    ///         Activation does not need the goal to be met, only that something was raised, so a
+    ///         partially funded partnership can still go ahead at the size it reached.
     function activate(uint256 id) external onlyOwner nonReentrant {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Funding, "not funding");
@@ -185,6 +218,10 @@ contract PartnershipDesk is Guardable {
         emit Activated(id, partnership.funded);
     }
 
+    /// @notice Calls off a partnership before it was activated, returning every contribution.
+    /// @dev    Only from `Funding`: once capital is with the operator the way back is a settlement
+    ///         or a default, not a cancellation. Funders claim their own refunds rather than being
+    ///         paid in a loop here, so one funder cannot block the rest.
     function cancel(uint256 id) external onlyOwner {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Funding, "not funding");
@@ -213,6 +250,11 @@ contract PartnershipDesk is Guardable {
         emit Cancelled(id);
     }
 
+    /// @notice The operator returns capital, and profit, to the desk.
+    /// @dev    Only the operator may call this, and it may be called more than once, because
+    ///         capital comes back as the venture realises it rather than in a single payment. The
+    ///         amount is taken from the operator here and held by the desk until settlement, so
+    ///         what is reported and what arrived cannot differ.
     function reportReturn(uint256 id, uint256 amount) external nonReentrant {
         Partnership storage partnership = partnerships[id];
         // Still open after a default: an operator making good afterwards is strictly better for the
@@ -228,6 +270,11 @@ contract PartnershipDesk is Guardable {
         emit ReturnReported(id, amount, partnership.returned);
     }
 
+    /// @notice Closes an active partnership so its funders and operator can be paid.
+    /// @dev    Gated on the auditor's approval, not on the owner's word: the operator states what
+    ///         came back and somebody else agrees before any of it moves. Settlement only marks the
+    ///         partnership settled; nobody is paid in a loop here. Each party claims its own share,
+    ///         so one address that cannot receive cannot hold up everyone else.
     function settle(uint256 id) external onlyOwner {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Active, "not active");
@@ -254,16 +301,29 @@ contract PartnershipDesk is Guardable {
         emit Defaulted(id, partnership.returned);
     }
 
+    /// @notice What came back above the capital that went out, or zero if it fell short.
+    /// @dev    A loss is not a negative profit here: it shows as zero, and the shortfall lands on
+    ///         the funders through their payout being less than they put in. That is the
+    ///         partnership: a share of the gains and a share of the losses.
     function profitOf(uint256 id) public view returns (uint256) {
         Partnership storage partnership = partnerships[id];
         return partnership.returned > partnership.funded ? partnership.returned - partnership.funded : 0;
     }
 
+    /// @notice The operator's cut of the profit, at the share agreed when the partnership opened.
+    /// @dev    Of the profit only, never of the capital. An operator that returns less than it took
+    ///         is owed nothing, which is what keeps the incentive pointing the same way as the
+    ///         funders'.
     function operatorShareOf(uint256 id) public view returns (uint256) {
         Partnership storage partnership = partnerships[id];
         return (profitOf(id) * partnership.operatorShareBps) / BPS;
     }
 
+    /// @notice What a funder is owed, given how the partnership ended.
+    /// @dev    Cancelled returns the contribution untouched. Settled returns a pro-rata share of
+    ///         what came back less the operator's cut. Defaulted returns a pro-rata share of
+    ///         whatever did come back, which may be nothing. In every case it is measured against
+    ///         what this funder contributed rather than against an equal split.
     function funderPayoutOf(uint256 id, address funder) public view returns (uint256) {
         Partnership storage partnership = partnerships[id];
         uint256 contribution = contributions[id][funder];
@@ -279,6 +339,11 @@ contract PartnershipDesk is Guardable {
         return (funderPool * contribution) / partnership.funded;
     }
 
+    /// @notice A funder takes what it is owed once the partnership has ended.
+    /// @dev    Pull rather than push, so a single address that cannot receive does not strand the
+    ///         others. Marked claimed only when something is actually paid: a zero payout must not
+    ///         burn the record, or a funder whose share rounds to nothing now could never claim
+    ///         after a later return arrives.
     function claim(uint256 id) external nonReentrant {
         uint256 payout = funderPayoutOf(id, msg.sender);
         Status status = partnerships[id].status;
@@ -296,6 +361,10 @@ contract PartnershipDesk is Guardable {
         emit FunderClaimed(id, msg.sender, payout);
     }
 
+    /// @notice The operator takes its share of the profit, once settled.
+    /// @dev    Only after settlement, and only once. A defaulted partnership pays the operator
+    ///         nothing, whatever came back: the share is a reward for finishing, not a fee for
+    ///         taking the money.
     function claimOperator(uint256 id) external nonReentrant {
         Partnership storage partnership = partnerships[id];
         require(partnership.status == Status.Settled, "not settled");

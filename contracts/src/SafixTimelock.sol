@@ -62,6 +62,10 @@ contract SafixTimelock {
         return keccak256(abi.encode(target, data, salt));
     }
 
+    /// @notice Whether a queued change has waited its delay and has not yet expired.
+    /// @dev    The window is what makes a queue a commitment rather than an option held open
+    ///         forever: a change nobody executed in time has to be queued again, in public, rather
+    ///         than sitting ready to fire at a moment of somebody's choosing.
     function isReady(bytes32 id) public view returns (bool) {
         uint256 queued = queuedAt[id];
         if (queued == 0) return false;

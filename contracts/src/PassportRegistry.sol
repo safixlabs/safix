@@ -62,12 +62,22 @@ contract PassportRegistry {
         owner = msg.sender;
     }
 
+    /// @notice Hands the registry's owner role to another address.
+    /// @dev    The owner appoints attesters and is an attester itself, so this is the whole of the
+    ///         registry's authority over who is credited with what. Zero is refused: a registry
+    ///         nobody owns can never appoint another attester, and every attestation it holds would
+    ///         be frozen as it stands.
     function setOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "zero owner");
         owner = newOwner;
         emit OwnerChanged(newOwner);
     }
 
+    /// @notice Allows or stops an address writing attestations.
+    /// @dev    Attesters state what they checked about a subject, and the pool reads the result as
+    ///         a fact. Removing one leaves its existing attestations standing: what was verified
+    ///         was verified, and unwinding it belongs to `revoke` on the subject rather than to the
+    ///         attester losing the role.
     function setAttester(address attester, bool allowed) external onlyOwner {
         attesters[attester] = allowed;
         emit AttesterSet(attester, allowed);

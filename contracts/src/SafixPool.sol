@@ -241,6 +241,11 @@ contract SafixPool is Guardable {
         owner = msg.sender;
     }
 
+    /// @notice Hands the owner role to another address.
+    /// @dev    The owner pauses, unpauses, collects fees, appoints the guardian and the price
+    ///         updater, and absorbs bad debt. It is the operational key, distinct from the timelock
+    ///         that holds the parameters. Zero is refused: an ownerless pool could never be paused
+    ///         again, and pausing is the one thing that has to work at the worst moment.
     function setOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "zero owner");
         owner = newOwner;
@@ -273,6 +278,13 @@ contract SafixPool is Guardable {
         _unpause(actions, msg.sender);
     }
 
+    /// @notice Sets what a borrower pays at the door and on the way out, in basis points.
+    /// @dev    Behind the timelock, and capped at five percent each, because these are the whole
+    ///         cost of a loan here: there is no interest to dilute a change, so a fee moved without
+    ///         notice lands entirely on the next borrower. The cap is what stops a compromised
+    ///         timelock from turning a draw into a confiscation. Existing debt is unaffected; the
+    ///         origination fee was charged when it was drawn, and the redemption fee is read as
+    ///         principal returns.
     function setFees(uint16 originationBps, uint16 redemptionBps) external onlyTimelock {
         require(originationBps <= 500 && redemptionBps <= 500, "fee too high");
         originationFeeBps = originationBps;
@@ -280,16 +292,31 @@ contract SafixPool is Guardable {
         emit FeesSet(originationBps, redemptionBps);
     }
 
+    /// @notice Appoints the address allowed to post prices alongside the owner.
+    /// @dev    `onlyOwner` rather than the timelock on purpose: a pool that cannot price an asset
+    ///         refuses every draw, every withdrawal against collateral and every liquidation, so
+    ///         restoring the ability to price has to be immediate rather than delayed. Zero retires
+    ///         the role, which is what a pool whose assets all carry feeds should do.
     function setPriceUpdater(address updater) external onlyOwner {
         priceUpdater = updater;
         emit PriceUpdaterSet(updater);
     }
 
+    /// @notice Points the pool at the registry it reads credit passports from.
+    /// @dev    Zero means no passport is required to draw, which is the state a permissionless
+    ///         deployment stays in. Setting one gates drawing on whatever `requiredPassport`
+    ///         demands, and the registry is read rather than copied, so a revocation there takes
+    ///         effect here on the next draw.
     function setPassportRegistry(address registry) external onlyOwner {
         passportRegistry = registry;
         emit PassportRegistrySet(registry);
     }
 
+    /// @notice Sets the cut a liquidator keeps of the collateral it seizes, in basis points.
+    /// @dev    The pool cannot rely on one keeper being awake, so it pays whoever closes a bad
+    ///         position. Capped at two percent: every point paid here comes out of what the
+    ///         providers receive, and a liquidation is supposed to fund them rather than the person
+    ///         who noticed it first.
     function setLiquidationIncentive(uint16 bps) external onlyTimelock {
         require(bps <= 200, "too high");
         liquidationIncentiveBps = bps;
@@ -325,6 +352,16 @@ contract SafixPool is Guardable {
         emit PriceGuardSet(asset, maxPriceAge, maxDeviationBps, minPrice1e18, maxPrice1e18);
     }
 
+    /// @notice Accepts an asset as collateral, or changes the terms it is accepted on.
+    /// @param asset            the token the pool will hold
+    /// @param maxLtvBps        the most that may be owed against it, as a share of its value
+    /// @param liqThresholdBps  the share at which the position may be liquidated
+    /// @param priceUsd1e18     its price now, until a feed or the price updater moves it
+    /// @dev    The two ratios are what separate a borrower from liquidation, so the gap between
+    ///         them is the room a price has to move before a position is closed. Configuring an
+    ///         asset that is already configured changes its terms rather than adding it twice.
+    ///         There is no way back to unconfigured: use `setAssetRetired` to stop new exposure
+    ///         while what is outstanding stays liquidatable.
     function configureAsset(
         address asset,
         uint16 maxLtvBps,
@@ -395,6 +432,10 @@ contract SafixPool is Guardable {
         emit AssetRetired(asset, retired);
     }
 
+    /// @notice Limits how much may be owed against an asset and how much of it the pool will hold.
+    /// @dev    Zero means uncapped, not closed, which is worth reading twice: to stop new exposure
+    ///         use `setAssetRetired`. Caps bound concentration in a single asset, so one collateral
+    ///         going bad cannot take the whole pool with it.
     function setAssetCaps(address asset, uint256 debtCap, uint256 collateralCap) external onlyTimelock {
         require(assetConfig[asset].enabled, "asset off");
         assetConfig[asset].debtCap = debtCap;
@@ -465,6 +506,11 @@ contract SafixPool is Guardable {
         emit PriceSet(asset, priceUsd1e18);
     }
 
+    /// @notice Points an asset at a Chainlink feed, or takes it off one.
+    /// @dev    A feed replaces the posted price entirely for that asset, so this is what retires the
+    ///         manual updater. The feed's own decimals are read and stored once here rather than
+    ///         assumed, and more than eighteen is refused because the conversion to 1e18 would
+    ///         underflow. Zero returns the asset to whatever price was last posted.
     function setPriceFeed(address asset, address feed) external onlyTimelock {
         require(assetConfig[asset].enabled, "asset off");
         if (feed != address(0)) {
@@ -589,6 +635,11 @@ contract SafixPool is Guardable {
         revert("asset off");
     }
 
+    /// @notice Sends the protocol's accumulated fees to an address of the owner's choosing.
+    /// @dev    Only what fees produced: this counter is separate from deposits and from the
+    ///         reserve, and `availableLiquidity` already excludes it, so collecting cannot reach
+    ///         providers' money or the buffer that stands in front of them. Zeroed before the
+    ///         transfer, which is what makes the reentrancy guard belt as well as braces.
     function collectProtocolFees(address to) external onlyOwner nonReentrant {
         uint256 amount = protocolFees;
         protocolFees = 0;
@@ -596,15 +647,26 @@ contract SafixPool is Guardable {
         emit FeesCollected(to, amount);
     }
 
+    /// @notice How many assets have ever been configured as collateral.
+    /// @dev    Configured, not currently accepted: a retired asset is still counted, because it is
+    ///         still one the pool holds and may have to liquidate.
     function assetCount() external view returns (uint256) {
         return assetList.length;
     }
 
+    /// @notice What an amount of an asset is worth in stable units, at the price the pool holds.
+    /// @dev    Reverts rather than guessing when the price is not usable, because a value derived
+    ///         from a price the pool refuses to act on would be a number that looks like a fact.
     function collateralValueStable(address asset, uint256 amount) public view returns (uint256) {
         (uint256 price1e18,) = currentPrice(asset);
         return (amount * price1e18) / 1e30;
     }
 
+    /// @notice What a provider's deposit is worth now, after the liquidations it absorbed.
+    /// @dev    Deposits shrink as the pool takes losses. The product-sum accounting tracks that
+    ///         without touching each record: a deposit two scale rollovers behind has been reduced
+    ///         past what the arithmetic can represent and is worth nothing, which this reports as
+    ///         zero rather than as a number the division would otherwise produce.
     function compoundedDepositOf(address provider) public view returns (uint256) {
         DepositRecord storage record = depositRecords[provider];
         if (record.rawStake == 0) return 0;
@@ -622,6 +684,9 @@ contract SafixPool is Guardable {
         return (record.rawStake * (firstPortion + secondPortion)) / record.snapshotP;
     }
 
+    /// @notice The collateral a provider has earned in an asset and not yet claimed.
+    /// @dev    This is the return on a deposit. It grows only when a liquidation happens, which is
+    ///         why a quiet market pays a provider nothing.
     function gainOf(address provider, address asset) public view returns (uint256) {
         DepositRecord storage record = depositRecords[provider];
         return pendingGains[provider][asset] + _gainSince(record, asset);
@@ -650,6 +715,12 @@ contract SafixPool is Guardable {
         record.snapshotScale = currentScale;
     }
 
+    /// @notice Puts stable into the pool, to be lent out and to absorb liquidations.
+    /// @dev    A deposit buys a share of what the pool earns and of what it loses. There is no
+    ///         interest: providers are paid when a position is liquidated and its collateral comes
+    ///         to them at a discount, so a quiet market pays nothing and a violent one pays well.
+    ///         Gains already accrued are realised before the stake changes, so a new deposit never
+    ///         dilutes what this provider was already owed.
     function deposit(uint256 amount) external nonReentrant {
         require(!isPaused(PAUSE_DEPOSITS), "deposits paused");
         require(amount > 0, "zero");
@@ -661,6 +732,10 @@ contract SafixPool is Guardable {
         emit Deposited(msg.sender, amount);
     }
 
+    /// @notice Takes stable back out of the pool.
+    /// @dev    Limited by what is not currently lent out, not by what was deposited: a provider
+    ///         whose money is in a borrower's hands waits for it to be repaid or liquidated. This
+    ///         is the one lever a provider has and it is deliberately not pausable.
     function withdraw(uint256 amount) external nonReentrant {
         _realize(msg.sender);
         DepositRecord storage record = depositRecords[msg.sender];
@@ -672,6 +747,11 @@ contract SafixPool is Guardable {
         emit Withdrawn(msg.sender, amount);
     }
 
+    /// @notice Collects the collateral this provider's deposits earned from liquidations.
+    /// @dev    Gains are the return: a liquidated position's collateral arrives here at a discount
+    ///         to its price, split across providers by what each had in the pool at the time. Taken
+    ///         per asset because they are separate tokens, and the caller names which ones it wants
+    ///         rather than the pool walking a list that could grow past what fits in a block.
     function claimGains(address[] calldata assets) external nonReentrant {
         _realize(msg.sender);
         for (uint256 i = 0; i < assets.length; i++) {
@@ -683,6 +763,11 @@ contract SafixPool is Guardable {
         }
     }
 
+    /// @notice Moves collateral into the caller's position, without borrowing anything yet.
+    /// @dev    Separate from `draw` so that locking and borrowing are two decisions: collateral can
+    ///         be added to a position under pressure without also taking on more debt. Refused for
+    ///         a retired asset, since that is new exposure to something the protocol is winding
+    ///         down.
     function lockCollateral(address asset, uint256 amount) external nonReentrant {
         require(assetConfig[asset].enabled, "asset off");
         require(!assetRetired[asset], "asset retired");
@@ -694,6 +779,11 @@ contract SafixPool is Guardable {
         emit CollateralLocked(msg.sender, asset, amount);
     }
 
+    /// @notice Takes collateral back out, as far as the debt against it allows.
+    /// @dev    Needs a usable price, because what is left has to still cover what is owed. A
+    ///         position with no debt can be emptied entirely; one with debt may withdraw only down
+    ///         to its borrowing limit, not down to its liquidation threshold, so a withdrawal never
+    ///         leaves a position one tick from being closed.
     function withdrawCollateral(address asset, uint256 amount) external nonReentrant {
         Position storage position = positions[msg.sender][asset];
         require(amount > 0 && amount <= position.collateral, "bad amount");
@@ -720,6 +810,13 @@ contract SafixPool is Guardable {
         emit CollateralWithdrawn(msg.sender, asset, amount);
     }
 
+    /// @notice Borrows stable against collateral already locked.
+    /// @dev    The fee is charged here, once, and added to the debt. Nothing accrues afterwards:
+    ///         the debt recorded now is the debt owed in ten years, which is what makes the
+    ///         liquidation threshold a function of price alone rather than of price and time.
+    ///         Refused when the asset is retired, when the price is not usable, when a cap or the
+    ///         pool's liquidity is reached, and when the position would be left below the minimum
+    ///         worth liquidating.
     function draw(address asset, uint256 amount) external nonReentrant {
         require(!isPaused(PAUSE_DRAWS), "draws paused");
         AssetConfig storage config = assetConfig[asset];
@@ -820,6 +917,10 @@ contract SafixPool is Guardable {
         fee = _redemptionFee((position.principal * debtRetired) / position.debt);
     }
 
+    /// @notice Repays everything owed and returns the collateral in one call.
+    /// @dev    The way out for a borrower who wants to be done: repaying to zero and withdrawing
+    ///         separately costs two transactions and leaves a window between them. Not pausable,
+    ///         like every other exit, because a borrower must always be able to get out.
     function closePosition(address asset) external nonReentrant {
         Position storage position = positions[msg.sender][asset];
         require(position.collateral > 0 || position.debt > 0, "no position");
@@ -938,6 +1039,11 @@ contract SafixPool is Guardable {
         return offset - fromReserve;
     }
 
+    /// @notice Whether a position may be liquidated right now.
+    /// @dev    Answers false for any price the pool would not act on, so a stale or out-of-band
+    ///         price reads as "not liquidatable" rather than reverting. A keeper deciding what to
+    ///         do next needs an answer rather than an exception, and refusing to act on a price
+    ///         nobody trusts is the safe direction.
     function isLiquidatable(address borrower, address asset) public view returns (bool) {
         Position storage position = positions[borrower][asset];
         if (position.debt == 0) return false;
@@ -947,6 +1053,14 @@ contract SafixPool is Guardable {
         return (value * assetConfig[asset].liqThresholdBps) / BPS < position.debt;
     }
 
+    /// @notice Closes an unhealthy position, cancelling its debt against the pool and handing the
+    ///         collateral to the providers.
+    /// @param debtAmount how much of the debt to settle; more than is owed settles all of it
+    /// @dev    Anyone may call this, and the caller takes a small cut of the seized collateral for
+    ///         doing so, because the pool cannot depend on a single keeper being awake. The rest
+    ///         goes to the providers, and the protocol itself takes nothing: there is no revenue
+    ///         here, which is the point. A shortfall, where the collateral is worth less than the
+    ///         debt, is met by the reserve first and only then by the providers.
     function liquidate(address borrower, address asset, uint256 debtAmount) external nonReentrant {
         require(!isPaused(PAUSE_LIQUIDATIONS), "liquidations paused");
         // Reverts with the reason the price is unusable, rather than the misleading "healthy".
