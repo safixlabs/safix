@@ -8,7 +8,12 @@
   "disclosure": {
     "acknowledgeWithinHours": 48,
     "triageWithinDays": 5,
-    "fixTargetDays": { "critical": 7, "high": 14, "medium": 30, "low": 90 },
+    "fixTargetDays": {
+      "critical": 7,
+      "high": 14,
+      "medium": 30,
+      "low": 90
+    },
     "publicAfterFixDays": 30,
     "maximumEmbargoDays": 90,
     "safeHarbour": true
@@ -16,7 +21,12 @@
   "bounty": {
     "live": false,
     "currency": null,
-    "rewards": { "critical": null, "high": null, "medium": null, "low": null },
+    "rewards": {
+      "critical": null,
+      "high": null,
+      "medium": null,
+      "low": null
+    },
     "inScope": [
       "SafixPool: loss of funds, theft of collateral or deposits, minting debt without collateral, breaking the loan-to-value or liquidation-threshold checks",
       "SafixPool: accounting errors in the product-sum stability pool that misprice a provider's stake or gains",
@@ -44,27 +54,29 @@
     "responseTargetHours": null
   },
   "openSource": {
-    "decided": false,
+    "decided": true,
     "decisionDue": "before the first mainnet transaction",
     "repositories": {
       "safixlabs/safix": {
         "contents": "Protocol contracts, the Foundry test suite, the liquidation keeper and the information memorandum",
         "declaredLicense": "AGPL-3.0-only",
         "licenseSource": "SPDX headers on every Solidity file",
-        "opensAt": null
+        "opensAt": "2026-09-22"
       },
       "safixlabs/safix-app": {
         "contents": "The application: borrow, pool, partnerships and passport screens",
         "declaredLicense": null,
         "licenseSource": null,
-        "opensAt": null
+        "opensAt": "2026-09-22"
       },
       "safixlabs/safix-docs": {
         "contents": "This documentation site and its generators",
         "declaredLicense": null,
         "licenseSource": null,
-        "opensAt": null
+        "opensAt": "2026-09-22"
       }
-    }
+    },
+    "decidedAt": "2026-09-22",
+    "note": "Open. The three repositories are published at github.com/safixlabs with their history, under the organisation rather than a personal account."
   }
 }
