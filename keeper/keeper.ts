@@ -11,12 +11,14 @@ import {
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { createAlerter, liquidationsAffordable, type Alerter } from "./src/alerts.ts"
+import { priceNeedsWriting } from "./src/prices.ts"
 import { loadConfig, loadPrivateKey, type Config } from "./src/config.ts"
 import { log, reason, setInstance } from "./src/log.ts"
 
 const poolAbi = parseAbi([
   "function setPrice(address asset, uint256 priceUsd1e18)",
   "function currentPrice(address asset) view returns (uint256 price1e18, uint256 updatedAt)",
+  "function priceGuards(address asset) view returns (uint64 maxPriceAge, uint16 maxDeviationBps, uint256 minPrice1e18, uint256 maxPrice1e18)",
   "function isLiquidatable(address borrower, address asset) view returns (bool)",
   "function liquidate(address borrower, address asset, uint256 debtAmount)",
   "function positions(address borrower, address asset) view returns (uint256 collateral, uint256 debt, uint256 principal)",
@@ -152,15 +154,31 @@ class Keeper {
     for (const [asset, price] of entries) {
       const target = toPrice1e18(price)
       try {
-        const [current] = await this.publicClient.readContract({
-          abi: poolAbi,
-          address: this.config.poolAddress,
-          functionName: "currentPrice",
-          args: [asset]
+        const [[current, updatedAt], [maxPriceAge]] = await Promise.all([
+          this.publicClient.readContract({
+            abi: poolAbi,
+            address: this.config.poolAddress,
+            functionName: "currentPrice",
+            args: [asset]
+          }),
+          this.publicClient.readContract({
+            abi: poolAbi,
+            address: this.config.poolAddress,
+            functionName: "priceGuards",
+            args: [asset]
+          })
+        ])
+
+        const reason = priceNeedsWriting({
+          current,
+          target,
+          updatedAt,
+          maxPriceAge,
+          now: BigInt(Math.floor(Date.now() / 1000))
         })
-        if (current === target) continue
+        if (!reason) continue
         const { hash } = await this.send("setPrice", [asset, target])
-        log.info("price.set", { asset, price, hash })
+        log.info("price.set", { asset, price, hash, because: reason })
       } catch (error) {
         // The pool refuses a price outside the asset's band or one that moves too far in a single
         // update. That is the oracle guard working, and it says nothing about the other assets.
