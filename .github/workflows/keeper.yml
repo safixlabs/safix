@@ -50,6 +50,16 @@ jobs:
         working-directory: keeper
         env:
           CONFIG: ./config.testnet.json
-          PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
+          KEEPER_PRIVATE_KEY: ${{ secrets.KEEPER_PRIVATE_KEY }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
-        run: npm run scan
+        run: |
+          # Unconfigured is not broken. Without a key there is nobody to run as, and
+          # failing every fifteen minutes would report a keeper that is down when what
+          # is true is that nobody has given it one yet. It says so and stops.
+          if [ -z "$KEEPER_PRIVATE_KEY" ]; then
+            echo "No KEEPER_PRIVATE_KEY, so this pass has nobody to run as."
+            echo "Set it in the repository's secrets to start keeping prices fresh."
+            echo "keeper/README.md says which key and what it needs."
+            exit 0
+          fi
+          PRIVATE_KEY="$KEEPER_PRIVATE_KEY" npm run scan
