@@ -192,6 +192,11 @@ contract SafixPool is Guardable {
     event FeesSet(uint16 originationBps, uint16 redemptionBps);
     event SequencerUptimeFeedSet(address indexed feed, uint256 gracePeriod);
     event AssetCapsSet(address indexed asset, uint256 debtCap, uint256 collateralCap);
+    event AssetRetired(address indexed asset, bool retired);
+
+    /// @notice Assets closed to new exposure. Kept beside `assetConfig` rather than inside it: a
+    ///         seventh field would change that getter's shape and every reader built against it.
+    mapping(address => bool) public assetRetired;
     event ReserveFeeShareSet(uint16 bps);
     event ReserveFunded(address indexed from, uint256 amount, uint256 reserveAfter);
     event ReserveWithdrawn(address indexed to, uint256 amount, uint256 reserveAfter);
@@ -374,6 +379,22 @@ contract SafixPool is Guardable {
     ///         `configureAsset` so tuning an LTV never disturbs a cap, or the other way round.
     ///         Either cap may be lowered below current usage: that stops further growth without
     ///         forcing anything open to unwind, which would be a liquidation by another name.
+    /// @notice Stops new exposure to an asset without touching what is already outstanding.
+    /// @dev    An asset can outlive its usefulness: the stock behind it is delisted, its token is
+    ///         compromised, its feed is retired. Until now the pool had no way to say so. Setting a
+    ///         cap to zero says the opposite, because zero means uncapped, and clearing `enabled`
+    ///         would take the price with it and leave existing positions unliquidatable, which
+    ///         turns a bad asset into frozen bad debt.
+    ///
+    ///         So retirement is deliberately narrow. Locking collateral and drawing are refused.
+    ///         Repaying, closing, withdrawing collateral and liquidating all carry on exactly as
+    ///         before, because the pool still has to be able to get out of what it already holds.
+    function setAssetRetired(address asset, bool retired) external onlyTimelock {
+        require(assetConfig[asset].enabled, "asset off");
+        assetRetired[asset] = retired;
+        emit AssetRetired(asset, retired);
+    }
+
     function setAssetCaps(address asset, uint256 debtCap, uint256 collateralCap) external onlyTimelock {
         require(assetConfig[asset].enabled, "asset off");
         assetConfig[asset].debtCap = debtCap;
@@ -664,6 +685,7 @@ contract SafixPool is Guardable {
 
     function lockCollateral(address asset, uint256 amount) external nonReentrant {
         require(assetConfig[asset].enabled, "asset off");
+        require(!assetRetired[asset], "asset retired");
         require(amount > 0, "zero");
         require(amount <= assetCollateralHeadroom(asset), "collateral cap");
         positions[msg.sender][asset].collateral += amount;
@@ -702,6 +724,7 @@ contract SafixPool is Guardable {
         require(!isPaused(PAUSE_DRAWS), "draws paused");
         AssetConfig storage config = assetConfig[asset];
         require(config.enabled, "asset off");
+        require(!assetRetired[asset], "asset retired");
         require(amount > 0, "zero");
         uint256 price1e18 = _requireUsablePrice(asset);
         if (passportRegistry != address(0)) {
@@ -855,11 +878,33 @@ contract SafixPool is Guardable {
         assetCollateral[asset] -= collateral;
 
         uint256 lpLoss = _settleShortfall(borrower, asset, debt, collateralValue);
-        // Measured against what providers carry rather than against the debt; see liquidate.
+        _distributeToProviders(asset, collateral, lpLoss);
+
+        emit Liquidated(borrower, asset, msg.sender, debt, collateral);
+    }
+
+
+    /// @dev Hands a liquidation's proceeds and its shortfall to the providers, in the one place
+    ///      both paths go through.
+    ///
+    ///      The arithmetic here is the whole of the product-sum accounting and it is precision
+    ///      critical: `sumS` records what each deposit is owed of the collateral, `productP`
+    ///      records what is left of each deposit, and the scale rolls over when `productP` would
+    ///      otherwise round to nothing. Written twice it could drift apart in one path and not the
+    ///      other, and a divergence there would be silent, so it is written once.
+    ///
+    ///      The pool is too small only when providers would carry every last unit of their
+    ///      deposits: the accounting cannot represent a pool emptied to zero, because P would reach
+    ///      zero and every later deposit would compound to nothing. The requirement is on what
+    ///      providers actually carry, the shortfall less whatever the reserve paid, not on the
+    ///      debt, so a shortfall the reserve covers is not refused where a lone borrower's debt
+    ///      equals the deposits. Deposits never fall below the debt outstanding, so that boundary
+    ///      is the only place this can bind, and one more unit of deposits clears it.
+    function _distributeToProviders(address asset, uint256 gain, uint256 lpLoss) internal {
         require(totalDeposits > lpLoss, "pool too small");
 
-        if (collateral > 0) {
-            sumS[currentScale][asset] += (collateral * productP) / totalDeposits;
+        if (gain > 0) {
+            sumS[currentScale][asset] += (gain * productP) / totalDeposits;
         }
         uint256 newP = (productP * (totalDeposits - lpLoss)) / totalDeposits;
         while (newP < P_MIN) {
@@ -868,8 +913,6 @@ contract SafixPool is Guardable {
         }
         productP = newP;
         totalDeposits -= lpLoss;
-
-        emit Liquidated(borrower, asset, msg.sender, debt, collateral);
     }
 
     /// @dev Places the gap between debt cancelled and value received. The reserve takes it first;
@@ -936,24 +979,8 @@ contract SafixPool is Guardable {
         // land somewhere named rather than quietly diluting every provider.
         uint256 received = (poolShare * price1e18) / 1e30;
         uint256 lpLoss = _settleShortfall(borrower, asset, offset, received);
-        // The pool is too small only when providers would carry every last unit of their
-        // deposits: the product-sum accounting cannot represent a pool emptied to zero, because P
-        // would reach zero and every later deposit would compound to nothing. The requirement is on
-        // what providers actually carry — the offset less whatever the reserve paid — not on the
-        // debt, so a shortfall the reserve covers is not refused where a lone borrower's debt
-        // equals the deposits. Deposits never fall below the debt outstanding, so that boundary is
-        // the only place this can bind, and one more unit of deposits clears it. Checked after the
-        // settlement: a refusal reverts the settlement along with everything else.
-        require(totalDeposits > lpLoss, "pool too small");
-
-        sumS[currentScale][asset] += (poolShare * productP) / totalDeposits;
-        uint256 newP = (productP * (totalDeposits - lpLoss)) / totalDeposits;
-        while (newP < P_MIN) {
-            currentScale += 1;
-            newP *= SCALE_FACTOR;
-        }
-        productP = newP;
-        totalDeposits -= lpLoss;
+        // Checked inside, after the settlement: a refusal reverts the settlement with everything else.
+        _distributeToProviders(asset, poolShare, lpLoss);
         if (incentive > 0) {
             require(IERC20(asset).transfer(msg.sender, incentive), "transfer failed");
         }

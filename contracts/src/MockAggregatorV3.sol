@@ -16,6 +16,10 @@ contract MockAggregatorV3 {
 
     uint8 public immutable decimals;
     bool public reverting;
+    /// @dev A feed that answers for the latest round and not for older ones. Real aggregators
+    ///      behave this way after an upgrade: history moves to the new aggregator's numbering and
+    ///      the round before the current one stops resolving, while the latest answer is fine.
+    bool public revertingHistory;
     uint80 public latestRound;
 
     mapping(uint80 => Round) public rounds;
@@ -35,6 +39,10 @@ contract MockAggregatorV3 {
 
     function setReverting(bool reverting_) external {
         reverting = reverting_;
+    }
+
+    function setRevertingHistory(bool revertingHistory_) external {
+        revertingHistory = revertingHistory_;
     }
 
     /// @dev Publishes a new round stamped with the current block time.
@@ -69,7 +77,7 @@ contract MockAggregatorV3 {
     }
 
     function getRoundData(uint80 roundId) external view returns (uint80, int256, uint256, uint256, uint80) {
-        if (reverting) revert("feed down");
+        if (reverting || revertingHistory) revert("feed down");
         Round storage round = rounds[roundId];
         return (roundId, round.answer, round.startedAt, round.updatedAt, roundId);
     }

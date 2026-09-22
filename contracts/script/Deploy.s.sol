@@ -145,6 +145,8 @@ contract Deploy is Script {
         if (block.chainid == 4663) {
             require(multisig != address(0), "MULTISIG required on mainnet");
         }
+        _wirePriceUpdater(pool);
+
         address timelockAddress;
         if (multisig != address(0)) {
             require(timelockDelay > 0, "TIMELOCK_DELAY required alongside MULTISIG");
@@ -171,6 +173,38 @@ contract Deploy is Script {
         console.log("timelock", timelockAddress);
         console.log("realAsset", realAsset);
         console.log("auditor", auditor);
+    }
+
+
+    /// @dev Leaves the pool with a way to price something before ownership moves.
+    ///
+    ///      Ownership goes to a multisig at the end of this script, and `setPriceUpdater` is
+    ///      `onlyOwner`. Appointing one afterwards therefore costs a round of signatures, and
+    ///      every asset ages into a stale price while they are collected: no draw, no liquidation,
+    ///      no withdrawal against collateral, with the protocol open and inert. Nothing is at risk,
+    ///      because refusing a price is the safe direction, but the first thing anybody sees is a
+    ///      screen that refuses. It cost a Safe round trip on testnet already.
+    ///
+    ///      Mainnet must therefore arrive with one of the two ways to price an asset in place. A
+    ///      feed on every asset is the better one and retires the manual updater, so either
+    ///      satisfies this and neither is assumed.
+    function _wirePriceUpdater(SafixPool pool) internal {
+        address priceUpdater = vm.envOr("PRICE_UPDATER", address(0));
+        if (priceUpdater != address(0)) pool.setPriceUpdater(priceUpdater);
+        if (block.chainid != 4663) return;
+
+        require(priceUpdater != address(0) || _everyAssetHasAFeed(pool), "mainnet needs a price updater or a feed on every asset");
+    }
+
+    /// @dev Whether every configured asset carries a Chainlink feed, which is what makes a manual
+    ///      price updater unnecessary rather than merely absent.
+    function _everyAssetHasAFeed(SafixPool pool) internal view returns (bool) {
+        uint256 count = pool.assetCount();
+        if (count == 0) return false;
+        for (uint256 i = 0; i < count; i++) {
+            if (pool.priceFeeds(pool.assetList(i)) == address(0)) return false;
+        }
+        return true;
     }
 
     /// @dev Wires the L2 sequencer uptime feed when one is given. Kept out of `run`, which already
